@@ -1,0 +1,105 @@
+/**
+ * Memory Indicator HUD Styles
+ */
+
+.memory-indicator {
+  position: relative;
+  font-family: "Courier New", monospace;
+  color: #0ff;
+  text-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+}
+
+.memory-toggle {
+  background: rgba(0, 20, 40, 0.85);
+  border: 1px solid #0ff;
+  border-radius: 4px;
+  color: #0ff;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  padding: 6px 12px;
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(0, 255, 255, 0.25), inset 0 0 8px rgba(0, 255, 255, 0.15);
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.memory-toggle:hover,
+.memory-toggle[aria-expanded="true"] {
+  background: rgba(0, 60, 80, 0.9);
+  box-shadow: 0 0 18px rgba(0, 255, 255, 0.45), inset 0 0 10px rgba(0, 255, 255, 0.25);
+}
+
+.memory-panel {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  width: 320px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: linear-gradient(135deg, rgba(0, 20, 40, 0.95), rgba(0, 40, 60, 0.95));
+  border: 1px solid #0ff;
+  border-radius: 4px;
+  box-shadow: 0 0 24px rgba(0, 255, 255, 0.3), inset 0 0 16px rgba(0, 255, 255, 0.1);
+  padding: 12px;
+  z-index: 50;
+  animation: memorySlideIn 0.2s ease-out;
+}
+
+@keyframes memorySlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.memory-panel-title {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: rgba(0, 255, 255, 0.8);
+  margin-bottom: 8px;
+}
+
+.memory-empty {
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.memory-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.memory-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed rgba(0, 255, 255, 0.2);
+}
+
+.memory-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.memory-cat {
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: rgba(0, 255, 255, 0.6);
+}
+
+.memory-text {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #aff;
+  word-break: break-word;
+}

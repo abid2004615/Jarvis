@@ -1,0 +1,185 @@
+/**
+ * Automation Panel HUD Styles
+ */
+
+.automation-panel {
+  position: relative;
+  font-family: "Courier New", monospace;
+  color: #ffb347;
+  text-shadow: 0 0 10px rgba(255, 179, 71, 0.5);
+}
+
+.automation-toggle {
+  background: rgba(40, 20, 0, 0.85);
+  border: 1px solid #ffb347;
+  border-radius: 4px;
+  color: #ffb347;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  padding: 6px 12px;
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(255, 179, 71, 0.25), inset 0 0 8px rgba(255, 179, 71, 0.15);
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.automation-toggle:hover,
+.automation-toggle[aria-expanded="true"] {
+  background: rgba(60, 30, 0, 0.9);
+  box-shadow: 0 0 18px rgba(255, 179, 71, 0.45), inset 0 0 10px rgba(255, 179, 71, 0.25);
+}
+
+.automation-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  width: 380px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: linear-gradient(135deg, rgba(40, 20, 0, 0.95), rgba(50, 30, 0, 0.95));
+  border: 1px solid #ffb347;
+  border-radius: 4px;
+  box-shadow: 0 0 24px rgba(255, 179, 71, 0.3), inset 0 0 16px rgba(255, 179, 71, 0.1);
+  padding: 12px;
+  z-index: 50;
+  animation: automationSlideIn 0.2s ease-out;
+}
+
+@keyframes automationSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.automation-panel-title {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: rgba(255, 179, 71, 0.8);
+  margin-bottom: 8px;
+}
+
+.automation-status {
+  font-size: 11px;
+  color: #ffd9a0;
+  margin-bottom: 8px;
+  border: 1px dashed rgba(255, 179, 71, 0.4);
+  padding: 6px 8px;
+}
+
+.automation-empty {
+  font-size: 11px;
+  opacity: 0.75;
+  line-height: 1.4;
+}
+
+.automation-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.automation-item {
+  border: 1px solid rgba(255, 179, 71, 0.35);
+  border-radius: 4px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.automation-item.disabled {
+  opacity: 0.55;
+}
+
+.automation-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.automation-name {
+  font-size: 12px;
+  font-weight: bold;
+  color: #ffe0b0;
+  word-break: break-word;
+}
+
+.automation-badge {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid;
+}
+
+.automation-badge.on {
+  color: #7dff9a;
+  border-color: #7dff9a;
+  text-shadow: 0 0 8px rgba(125, 255, 154, 0.6);
+}
+
+.automation-badge.off {
+  color: #ff8a7d;
+  border-color: #ff8a7d;
+}
+
+.automation-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: #ffd9a0;
+}
+
+.automation-label {
+  font-size: 8px;
+  letter-spacing: 0.15em;
+  color: rgba(255, 179, 71, 0.6);
+  margin-right: 6px;
+}
+
+.automation-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.automation-btn {
+  background: rgba(60, 30, 0, 0.8);
+  border: 1px solid #ffb347;
+  border-radius: 3px;
+  color: #ffb347;
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.automation-btn:hover {
+  background: rgba(80, 40, 0, 0.9);
+}
+
+.automation-btn.danger {
+  border-color: #ff6a5e;
+  color: #ff8a7d;
+}
+
+.automation-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.automation-confirm-text {
+  font-size: 10px;
+  color: #ff8a7d;
+}

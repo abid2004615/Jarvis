@@ -1,0 +1,175 @@
+/**
+ * Notification Center HUD Styles
+ */
+
+.notification-center {
+  position: relative;
+  font-family: "Courier New", monospace;
+  color: #7dff9a;
+  text-shadow: 0 0 10px rgba(125, 255, 154, 0.5);
+}
+
+.notification-toggle {
+  background: rgba(0, 40, 20, 0.85);
+  border: 1px solid #7dff9a;
+  border-radius: 4px;
+  color: #7dff9a;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  padding: 6px 12px;
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(125, 255, 154, 0.25), inset 0 0 8px rgba(125, 255, 154, 0.15);
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.notification-toggle:hover,
+.notification-toggle[aria-expanded="true"] {
+  background: rgba(0, 60, 30, 0.9);
+  box-shadow: 0 0 18px rgba(125, 255, 154, 0.45), inset 0 0 10px rgba(125, 255, 154, 0.25);
+}
+
+.notification-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  width: 360px;
+  max-height: 340px;
+  overflow-y: auto;
+  background: linear-gradient(135deg, rgba(0, 40, 20, 0.95), rgba(0, 50, 25, 0.95));
+  border: 1px solid #7dff9a;
+  border-radius: 4px;
+  box-shadow: 0 0 24px rgba(125, 255, 154, 0.3), inset 0 0 16px rgba(125, 255, 154, 0.1);
+  padding: 12px;
+  z-index: 50;
+  animation: notificationSlideIn 0.2s ease-out;
+}
+
+@keyframes notificationSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.notification-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.notification-title {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: rgba(125, 255, 154, 0.8);
+}
+
+.notification-head-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.notification-empty {
+  font-size: 11px;
+  opacity: 0.75;
+  line-height: 1.4;
+}
+
+.notification-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.notification-item {
+  border: 1px solid rgba(125, 255, 154, 0.35);
+  border-radius: 4px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.notification-item.read {
+  opacity: 0.6;
+}
+
+.notification-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.notification-category {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid rgba(125, 255, 154, 0.5);
+  color: rgba(125, 255, 154, 0.9);
+  text-transform: uppercase;
+}
+
+.notification-time {
+  font-size: 9px;
+  color: rgba(125, 255, 154, 0.55);
+}
+
+.notification-item .notification-title {
+  font-size: 12px;
+  font-weight: bold;
+  letter-spacing: 0.05em;
+  color: #b6ffd0;
+}
+
+.notification-body {
+  font-size: 11px;
+  color: #d6ffe4;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.notification-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.notification-btn {
+  background: rgba(0, 60, 30, 0.8);
+  border: 1px solid #7dff9a;
+  border-radius: 3px;
+  color: #7dff9a;
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.notification-btn:hover {
+  background: rgba(0, 80, 40, 0.9);
+}
+
+.notification-btn.danger {
+  border-color: #ff6a5e;
+  color: #ff8a7d;
+}
+
+.notification-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.notification-confirm-text {
+  font-size: 10px;
+  color: #ff8a7d;
+}
