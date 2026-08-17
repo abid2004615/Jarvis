@@ -3,7 +3,7 @@
  * Validates voice controller error handling and state tracking
  */
 
-import { createVoiceController } from "@/lib/voice";
+import { createVoiceController } from "@/lib/voice-legacy";
 
 describe("Voice Controller Enhanced Features", () => {
   describe("State Tracking", () => {

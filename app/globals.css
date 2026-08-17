@@ -263,6 +263,55 @@ body {
   text-shadow: 0 0 6px rgba(255, 170, 48, 0.8);
 }
 
+.hud-settings-panel {
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(255, 170, 48, 0.3);
+  border-radius: 4px;
+  background: rgba(10, 5, 0, 0.8);
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: #ffcc66;
+}
+
+.hud-btn-toggle {
+  background: rgba(255, 170, 48, 0.1);
+  border: 1px solid rgba(255, 170, 48, 0.3);
+  color: #ffcc66;
+  font-family: "Courier New", monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  padding: 2px 8px;
+  cursor: pointer;
+  border-radius: 2px;
+  margin-left: 4px;
+}
+
+.hud-btn-toggle.on {
+  background: rgba(255, 170, 48, 0.3);
+  border-color: rgba(255, 170, 48, 0.6);
+  text-shadow: 0 0 6px rgba(255, 170, 48, 0.8);
+}
+
+.hud-btn-toggle.off {
+  opacity: 0.6;
+}
+
+.hud-note {
+  font-size: 9px;
+  color: rgba(255, 204, 102, 0.5);
+  font-style: italic;
+  letter-spacing: 0.08em;
+  line-height: 1.4;
+}
+
 @media (max-width: 600px) {
   .hud-hint {
     display: none;
