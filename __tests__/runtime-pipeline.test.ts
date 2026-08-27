@@ -79,25 +79,9 @@ describe("JARVIS Pipeline", () => {
     });
   });
 
-  describe("Confirmation Handling", () => {
-    test("should retrieve pending confirmations", () => {
-      const confirmations = pipeline.getPendingConfirmations();
-      expect(Array.isArray(confirmations)).toBe(true);
-    });
-
-    test("should clear pending confirmations", () => {
-      pipeline.clearPendingConfirmations();
-      const confirmations = pipeline.getPendingConfirmations();
-      expect(confirmations).toHaveLength(0);
-    });
-
-    test("should handle confirmation decision", async () => {
-      const result = await pipeline.handleConfirmation({
-        toolId: "invalid-id",
-        approved: true,
-      });
-
-      expect(result.error).toBeDefined();
+  describe("Chain Cleanup", () => {
+    test("should clear active chains without error", () => {
+      expect(() => pipeline.clearPendingConfirmations()).not.toThrow();
     });
   });
 

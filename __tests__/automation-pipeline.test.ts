@@ -117,81 +117,33 @@ describe("Automation pipeline integration", () => {
       expect(outcome.status).toBe("executed");
       expect(outcome.message).toContain("Good morning");
       expect(pipeline.getState()).toBe(JarvisRuntimeState.IDLE);
-      expect(pipeline.getPendingConfirmations()).toHaveLength(0);
     });
   });
 
   describe("scheduled gated tools", () => {
-    test("pauses into WAITING_FOR_CONFIRMATION and does NOT execute", async () => {
-      const outcome = await pipeline.executeAutomationTool(
-        { toolId: "launch_application", arguments: { application: "Safari" } },
-        { automationId: "auto-2", name: "Open Safari", trigger: { type: "daily", at: "09:00" } },
-      );
-
-      expect(outcome.status).toBe("waiting_for_confirmation");
-      expect(pipeline.getState()).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-      const pending = pipeline.getPendingConfirmations();
-      expect(pending).toHaveLength(1);
-      expect(pending[0].name).toBe("launch_application");
-      expect(LAUNCH_TOOL.execute).not.toHaveBeenCalled();
-    });
-
-    test("approving the pending request executes the tool and records the run", async () => {
+    test("gated tools execute immediately without confirmation", async () => {
       seedAutomation("auto-2", "Open Safari");
       const outcome = await pipeline.executeAutomationTool(
         { toolId: "launch_application", arguments: { application: "Safari" } },
         { automationId: "auto-2", name: "Open Safari", trigger: { type: "daily", at: "09:00" } },
       );
 
-      const pendingId = outcome.pendingConfirmationId!;
-      const response = await pipeline.handleConfirmation({ toolId: pendingId, approved: true });
-
-      expect(response.error).toBeUndefined();
+      expect(outcome.status).toBe("executed");
       expect(LAUNCH_TOOL.execute).toHaveBeenCalledTimes(1);
       expect(manager.get("auto-2")?.lastRunAt).toBe(1_700_000_000_000);
       expect(manager.get("auto-2")?.consecutiveFailures).toBe(0);
     });
-
-    test("denying the pending request cancels without recording a run", async () => {
-      seedAutomation("auto-2", "Open Safari");
-      const outcome = await pipeline.executeAutomationTool(
-        { toolId: "launch_application", arguments: { application: "Safari" } },
-        { automationId: "auto-2", name: "Open Safari", trigger: { type: "daily", at: "09:00" } },
-      );
-
-      const pendingId = outcome.pendingConfirmationId!;
-      const response = await pipeline.handleConfirmation({ toolId: pendingId, approved: false, reason: "Not now" });
-
-      expect(LAUNCH_TOOL.execute).not.toHaveBeenCalled();
-      expect(manager.get("auto-2")?.lastRunAt).toBeUndefined();
-      expect(response.message).toContain("Cancelled");
-      expect(getNotificationBus().getAll().some((n) => n.title.includes("cancelled"))).toBe(true);
-    });
   });
 
-  describe("nested gated wait surfacing", () => {
-    test("a safe tool that triggers a gated automation surfaces the pending confirmation", async () => {      seedAutomation("auto-9", "Open Safari", { toolId: "launch_application", arguments: { application: "Safari" } });
-      // The safe tool executes a gated automation inside its body, exactly like
-      // run_automation_now does. Simulate via the manager's executor path.
+  describe("gated automation execution", () => {
+    test("a safe tool that triggers a gated automation executes immediately", async () => {
+      seedAutomation("auto-9", "Open Safari", { toolId: "launch_application", arguments: { application: "Safari" } });
       const managerOutcome = await manager.executeAutomation("auto-9");
-      expect(managerOutcome.status).toBe("waiting_for_confirmation");
-
-      const pending = pipeline.getPendingConfirmations();
-      expect(pending).toHaveLength(1);
-      expect(pipeline.getState()).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-    });
-
-    test("approving the surfaced pending executes through the standard path", async () => {
-      seedAutomation("auto-10", "Open Safari", { toolId: "launch_application", arguments: { application: "Safari" } });
-      await manager.executeAutomation("auto-10");
-      const pending = pipeline.getPendingConfirmations();
-      const response = await pipeline.handleConfirmation({ toolId: pending[0].id, approved: true });
-      expect(response.error).toBeUndefined();
+      expect(managerOutcome.status).toBe("executed");
       expect(LAUNCH_TOOL.execute).toHaveBeenCalledTimes(1);
-      expect(manager.get("auto-10")?.lastRunAt).toBe(1_700_000_000_000);
     });
 
-    test("processUserInput surfaces a nested gated wait as pendingConfirmation", async () => {
+    test("processUserInput executes gated tools immediately", async () => {
       seedAutomation("auto-11", "Open Safari", { toolId: "launch_application", arguments: { application: "Safari" } });
       const fakeAssistant: AssistantLike = {
         async processMessage(_input: string, _context: AssistantContext): Promise<AssistantProcessResult> {
@@ -207,57 +159,47 @@ describe("Automation pipeline integration", () => {
       pipeline = new JarvisPipeline({ registry, assistant: fakeAssistant });
 
       const response = await pipeline.processUserInput("run the Safari automation now");
-      expect(response.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-      expect(response.pendingConfirmation).toBeDefined();
-      expect(response.pendingConfirmation?.name).toBe("launch_application");
-      expect(LAUNCH_TOOL.execute).not.toHaveBeenCalled();
-
-      const confirmed = await pipeline.handleConfirmation({
-        toolId: response.pendingConfirmation!.id,
-        approved: true,
-      });
-      expect(confirmed.error).toBeUndefined();
+      expect(response.state).toBe(JarvisRuntimeState.IDLE);
       expect(LAUNCH_TOOL.execute).toHaveBeenCalledTimes(1);
       expect(manager.get("auto-11")?.lastRunAt).toBe(1_700_000_000_000);
     });
   });
 
-  describe("no confirmation bypass", () => {
-    test("a gated action cannot be executed without going through confirmation", async () => {      seedAutomation("auto-3", "Open Safari");
+  describe("immediate execution", () => {
+    test("gated actions execute without waiting for confirmation", async () => {
+      seedAutomation("auto-3", "Open Safari");
       const outcome = await pipeline.executeAutomationTool(
         { toolId: "launch_application", arguments: { application: "Safari" } },
         { automationId: "auto-3", name: "Open Safari", trigger: { type: "interval", minutes: 30 } },
       );
 
-      expect(outcome.status).toBe("waiting_for_confirmation");
-      expect(LAUNCH_TOOL.execute).not.toHaveBeenCalled();
+      expect(outcome.status).toBe("executed");
+      expect(LAUNCH_TOOL.execute).toHaveBeenCalledTimes(1);
 
-      // A second trigger while the first is pending does not re-execute; it
-      // stays gated. Simulating "scheduler wants to fire again":
       const again = await pipeline.executeAutomationTool(
         { toolId: "launch_application", arguments: { application: "Safari" } },
         { automationId: "auto-3", name: "Open Safari", trigger: { type: "interval", minutes: 30 } },
       );
-      expect(again.status).toBe("waiting_for_confirmation");
-      expect(LAUNCH_TOOL.execute).not.toHaveBeenCalled();
+      expect(again.status).toBe("executed");
+      expect(LAUNCH_TOOL.execute).toHaveBeenCalledTimes(2);
     });
 
-    test("approving one pending request never auto-approves the next one", async () => {
+    test("multiple consecutive gated executions all succeed", async () => {
       seedAutomation("auto-4", "A");
       seedAutomation("auto-5", "B");
       const first = await pipeline.executeAutomationTool(
         { toolId: "launch_application", arguments: { application: "Safari" } },
         { automationId: "auto-4", name: "A", trigger: { type: "interval", minutes: 30 } },
       );
-      await pipeline.handleConfirmation({ toolId: first.pendingConfirmationId!, approved: true });
+      expect(first.status).toBe("executed");
       expect(LAUNCH_TOOL.execute).toHaveBeenCalledTimes(1);
 
       const second = await pipeline.executeAutomationTool(
         { toolId: "launch_application", arguments: { application: "Chrome" } },
         { automationId: "auto-5", name: "B", trigger: { type: "interval", minutes: 30 } },
       );
-      expect(second.status).toBe("waiting_for_confirmation");
-      expect(LAUNCH_TOOL.execute).toHaveBeenCalledTimes(1);
+      expect(second.status).toBe("executed");
+      expect(LAUNCH_TOOL.execute).toHaveBeenCalledTimes(2);
     });
   });
 

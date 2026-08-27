@@ -54,6 +54,7 @@ function mockFetch(ok: boolean, body: unknown, status = 200): jest.Mock {
     ok,
     status,
     statusText: status === 401 ? "Unauthorized" : status === 400 ? "Bad Request" : status === 429 ? "Too Many Requests" : "OK",
+    headers: { get: () => null },
     json: async () => body,
   });
   global.fetch = fn;

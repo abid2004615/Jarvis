@@ -1,8 +1,7 @@
 /**
  * End-to-end regression for the Groq "open safari" flow:
  * GroqProvider (mocked Groq tool_calls) -> AssistantService -> ToolRegistry
- * -> JarvisPipeline -> pendingConfirmation / WAITING_FOR_CONFIRMATION,
- * then ALLOW executes via the server-side path and DENY does not.
+ * -> JarvisPipeline -> immediate tool execution with results returned.
  * No real network calls and no real application launches happen here.
  */
 
@@ -77,64 +76,26 @@ describe("Groq tool-calling end-to-end flow ('open safari')", () => {
     return {
       pipeline,
       requestedUrl: () => {
-        const call = fetchMock.mock.calls[fetchMock.mock.calls.length - 1];
+        const call = fetchMock.mock.calls[0];
         return call[0];
       },
     };
   }
 
-  test("Grok-style launch_application tool call yields pendingConfirmation + WAITING_FOR_CONFIRMATION", async () => {
+  test("Grok-style launch_application tool call executes immediately and returns results", async () => {
     const { pipeline, requestedUrl } = buildPipeline();
 
     const result = await pipeline.processUserInput("open safari");
 
     expect(requestedUrl()).toBe("https://api.groq.com/openai/v1/chat/completions");
-    expect(result.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-    expect(result.pendingConfirmation).toBeDefined();
-    expect(result.pendingConfirmation?.name).toBe("launch_application");
-    expect(result.pendingConfirmation?.humanReadableAction).toContain("Safari");
-    expect(result.toolsExecuted).toBeUndefined();
-    expect(safariLaunchSpy).not.toHaveBeenCalled();
-  });
-
-  test("ALLOW executes the tool through the server-side path", async () => {
-    const { pipeline } = buildPipeline();
-
-    const pending = await pipeline.processUserInput("open safari");
-    expect(pending.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-
-    const result = await pipeline.handleConfirmation({
-      toolId: pending.pendingConfirmation!.id,
-      approved: true,
-    });
-
     expect(result.state).toBe(JarvisRuntimeState.IDLE);
+    expect(result.pendingConfirmation).toBeUndefined();
     expect(safariLaunchSpy).toHaveBeenCalledTimes(1);
     expect(safariLaunchSpy).toHaveBeenCalledWith({ application: "Safari" });
     expect(result.toolsExecuted?.[0]).toMatchObject({
       toolName: "launch_application",
       success: true,
     });
-    expect(pipeline.getPendingConfirmations()).toHaveLength(0);
-  });
-
-  test("DENY does not execute the tool and produces no side effect", async () => {
-    const { pipeline } = buildPipeline();
-
-    const pending = await pipeline.processUserInput("open safari");
-    expect(pending.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-
-    const result = await pipeline.handleConfirmation({
-      toolId: pending.pendingConfirmation!.id,
-      approved: false,
-      reason: "Not now",
-    });
-
-    expect(result.state).toBe(JarvisRuntimeState.IDLE);
-    expect(safariLaunchSpy).not.toHaveBeenCalled();
-    expect(result.toolsExecuted).toBeUndefined();
-    expect(result.message).toContain("Cancelled");
-    expect(pipeline.getPendingConfirmations()).toHaveLength(0);
   });
 
   test("a Groq plain-text response completes normally without confirmation", async () => {

@@ -3,8 +3,8 @@
  *
  * The personal layer must NEVER bypass the runtime system:
  *  - constructing a pipeline registers the personal tool set in the shared registry
- *  - routine steps run through the SAME ActionChain as conversation (safe steps
- *    execute in order, confirmation-gated steps pause for approval)
+ *  - routine steps run through the SAME ActionChain as conversation (all steps
+ *    execute immediately in order)
  *  - the routine manager's injected runner is the pipeline (no direct execution)
  *  - reminder firing rides the SINGLE shared scheduler tick
  */
@@ -144,10 +144,9 @@ describe("Personal layer pipeline integration", () => {
       expect(ECHO_TOOL.execute).toHaveBeenNthCalledWith(1, { message: "first" });
       expect(ECHO_TOOL.execute).toHaveBeenNthCalledWith(2, { message: "second" });
       expect(response.state).toBe(JarvisRuntimeState.IDLE);
-      expect(pipeline.getPendingConfirmations()).toHaveLength(0);
     });
 
-    test("pauses a confirmation-gated step and does NOT execute it", async () => {
+    test("executes a confirmation-gated step in order with safe steps", async () => {
       const response = await pipeline.runRoutineSteps(
         [
           { toolId: "echo", arguments: { message: "hi" } },
@@ -156,14 +155,14 @@ describe("Personal layer pipeline integration", () => {
         { routineId: "r2", name: "Open apps" },
       );
 
-      expect(response.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-      expect(response.pendingConfirmation).toBeDefined();
-      expect(response.pendingConfirmation?.name).toBe("launch_test_app");
-      expect(GATED_TOOL.execute).not.toHaveBeenCalled();
+      expect(response.state).toBe(JarvisRuntimeState.IDLE);
+      expect(response.pendingConfirmation).toBeUndefined();
       expect(ECHO_TOOL.execute).toHaveBeenCalledTimes(1);
+      expect(GATED_TOOL.execute).toHaveBeenCalledTimes(1);
+      expect(GATED_TOOL.execute).toHaveBeenCalledWith({ application: "Safari" });
     });
 
-    test("approving the pending step executes it and continues the chain", async () => {
+    test("executes a leading gated step then continues the chain", async () => {
       const response = await pipeline.runRoutineSteps(
         [
           { toolId: "launch_test_app", arguments: { application: "Safari" } },
@@ -172,37 +171,11 @@ describe("Personal layer pipeline integration", () => {
         { routineId: "r3", name: "Open and confirm" },
       );
 
-      const confirmed = await pipeline.handleConfirmation({
-        toolId: response.pendingConfirmation!.id,
-        approved: true,
-      });
-
-      expect(confirmed.error).toBeUndefined();
+      expect(response.state).toBe(JarvisRuntimeState.IDLE);
       expect(GATED_TOOL.execute).toHaveBeenCalledTimes(1);
       expect(GATED_TOOL.execute).toHaveBeenCalledWith({ application: "Safari" });
       expect(ECHO_TOOL.execute).toHaveBeenCalledWith({ message: "after" });
       expect(pipeline.getState()).toBe(JarvisRuntimeState.IDLE);
-    });
-
-    test("denying the pending step marks it denied and continues without executing", async () => {
-      const response = await pipeline.runRoutineSteps(
-        [
-          { toolId: "echo", arguments: { message: "one" } },
-          { toolId: "launch_test_app", arguments: { application: "Safari" } },
-          { toolId: "echo", arguments: { message: "two" } },
-        ],
-        { routineId: "r4", name: "Mixed" },
-      );
-
-      const denied = await pipeline.handleConfirmation({
-        toolId: response.pendingConfirmation!.id,
-        approved: false,
-        reason: "Not now",
-      });
-
-      expect(GATED_TOOL.execute).not.toHaveBeenCalled();
-      expect(ECHO_TOOL.execute).toHaveBeenCalledTimes(2);
-      expect(denied.message).toContain("Cancelled");
     });
   });
 
@@ -223,7 +196,7 @@ describe("Personal layer pipeline integration", () => {
       expect(manager.get(id)?.lastRunStatus).toBe("success");
     });
 
-    test("a routine with a gated step surfaces the pipeline confirmation", async () => {
+    test("a routine with a gated step runs it through the pipeline", async () => {
       if (!getToolRegistry().getTool(GATED_TOOL.name)) {
         getToolRegistry().register(GATED_TOOL);
       }
@@ -234,9 +207,11 @@ describe("Personal layer pipeline integration", () => {
       });
       const outcome = await manager.runRoutine(created.routine!.id);
 
-      expect(outcome.status).toBe("waiting_for_confirmation");
-      expect(GATED_TOOL.execute).not.toHaveBeenCalled();
-      expect(pipeline.getState()).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
+      expect(outcome.success).toBe(true);
+      expect(outcome.status).toBe("success");
+      expect(GATED_TOOL.execute).toHaveBeenCalledTimes(1);
+      expect(GATED_TOOL.execute).toHaveBeenCalledWith({ application: "Safari" });
+      expect(pipeline.getState()).toBe(JarvisRuntimeState.IDLE);
     });
   });
 

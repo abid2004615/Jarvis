@@ -3,7 +3,7 @@
  * Validates fallback and pattern matching behavior
  */
 
-import { routeAssistantCommand, callAIAssistant, confirmToolDecision } from "@/lib/aiRouter";
+import { routeAssistantCommand, callAIAssistant } from "@/lib/aiRouter";
 import type { AssistantResult } from "@/lib/aiRouter";
 import { JarvisRuntimeState } from "@/lib/runtime/types";
 
@@ -183,27 +183,19 @@ describe("AI Router - API Flow", () => {
     expect(parsedBody).toMatchObject({ message: "hello", conversationId: "conv-xyz" });
   });
 
-  test("should carry pending confirmation in the result", async () => {
+  test("should carry tool execution results in the result", async () => {
     mockFetchResponse({
       conversationId: "conv-abc",
-      message: "Requesting confirmation for launch_application",
-      state: "waiting_for_confirmation",
-      pendingConfirmation: {
-        id: "tool-1",
-        name: "launch_application",
-        description: "Launch an allowlisted application",
-        humanReadableAction: "Launch application: Safari",
-        arguments: { application: "Safari" },
-        riskLevel: "confirmation",
-        requiresUserConfirmation: true,
-      },
+      message: "Launched Safari",
+      state: "idle",
+      toolsExecuted: [{ toolName: "launch_application", success: true }],
     });
 
     const result = await callAIAssistant("launch Safari", "conv-abc");
 
-    expect(result.mode).toBe("SYSTEM");
-    expect(result.pendingConfirmation?.name).toBe("launch_application");
-    expect(result.pendingConfirmation?.humanReadableAction).toContain("Safari");
+    expect(result.mode).toBe("IDLE");
+    expect(result.actionChain).toBeUndefined();
+    expect(result.conversationId).toBe("conv-abc");
   });
 
   test("should fall back to pattern matching when the API is unreachable", async () => {
@@ -236,25 +228,5 @@ describe("AI Router - API Flow", () => {
 
     expect(result.mode).toBe("ERROR");
     expect(result.response).toBe("Unexpected error");
-  });
-
-  test("should send a confirmation decision to the server", async () => {
-    const fetchMock = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        conversationId: "conv-abc",
-        message: "launch_application executed successfully",
-        state: "idle",
-      }),
-    });
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
-
-    const result = await confirmToolDecision("tool-1", true);
-
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("/api/assistant/confirm");
-    expect(JSON.parse(String(init.body))).toEqual({ toolId: "tool-1", approved: true, reason: undefined });
-    expect(result.mode).toBe("IDLE");
-    expect(result.response).toContain("executed successfully");
   });
 });

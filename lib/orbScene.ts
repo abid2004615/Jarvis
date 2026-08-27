@@ -698,7 +698,8 @@ export function createOrbScene(container: HTMLElement): OrbSceneApi {
   // ═══════════════════════════════════════════════
   // ANIMATION
   // ═══════════════════════════════════════════════
-  const clock = new THREE.Clock();
+  const timer = new THREE.Timer();
+  timer.connect(document);
   let flickerTimer = 0;
   let rafId = 0;
   let disposed = false;
@@ -731,10 +732,11 @@ export function createOrbScene(container: HTMLElement): OrbSceneApi {
     hudVisible = visible;
   }
 
-  function animate() {
+  function animate(timestamp?: number) {
     if (disposed) return;
     rafId = requestAnimationFrame(animate);
-    const t = clock.getElapsedTime();
+    timer.update(timestamp);
+    const t = timer.getElapsed();
     const modeSettings = ORB_MODE_SETTINGS[currentMode];
 
     const dynamicRot = modeSettings.rotationSpeed + audioLevel * 0.006;
@@ -850,6 +852,7 @@ export function createOrbScene(container: HTMLElement): OrbSceneApi {
     disposed = true;
     cancelAnimationFrame(rafId);
     window.removeEventListener("resize", onResize);
+    timer.dispose();
     controls.dispose();
     scene.traverse((obj) => {
       const mesh = obj as THREE.Mesh;

@@ -70,7 +70,9 @@ export class AutomationScheduler {
   start(): void {
     if (this.started) return;
     if (activeScheduler && activeScheduler !== this) {
-      console.warn("JARVIS: refusing to start a second scheduler loop — one scheduler is already active.");
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("JARVIS: refusing to start a second scheduler loop — one scheduler is already active.");
+      }
       return;
     }
     this.started = true;

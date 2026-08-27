@@ -8,6 +8,7 @@ import type { ToolDefinition, ToolRegistry } from "@/lib/tools/types";
 import type { AssistantContext } from "./types";
 import { executeToolSafely } from "@/lib/tools/registry";
 import { JARVIS_SYSTEM_PROMPT } from "./system-prompt";
+import { filterToolsByIntent } from "./tool-filter";
 
 export interface AssistantOptions {
   provider: AIProvider;
@@ -45,13 +46,16 @@ export class AssistantService {
       throw new Error("AI provider is not configured");
     }
 
+    const allTools = this.toolRegistry.getToolsForAI();
+    const filteredTools = filterToolsByIntent(allTools, userMessage, 20);
+
     try {
       const aiResponse = await this.provider.complete(
         {
           ...context,
           systemPrompt: this.systemPrompt,
           maxTokens: this.maxTokens,
-          tools: this.toolRegistry.getToolsForAI(),
+          tools: filteredTools,
         },
         userMessage,
       );

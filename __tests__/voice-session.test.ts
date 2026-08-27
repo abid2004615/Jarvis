@@ -68,6 +68,17 @@ describe("P7 — Voice Session", () => {
     session.destroy();
   });
 
+  test("speakText does not change voice recognition state", () => {
+    const onStateChange = jest.fn();
+    const session = createVoiceSession({ onStateChange });
+
+    session.speakText("Typed response");
+
+    expect(session.getState()).toBe("idle");
+    expect(onStateChange).not.toHaveBeenCalled();
+    session.destroy();
+  });
+
   test("handlePipelineResponse shows confirmation when pending", () => {
     const onConfirmationRequest = jest.fn();
     const session = createVoiceSession({ onConfirmationRequest });

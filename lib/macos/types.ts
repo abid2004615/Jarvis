@@ -211,5 +211,7 @@ export interface RunningApplicationsResult {
 export interface ActiveWindowResult {
   available: boolean;
   title?: string;
+  /** Indicates whether title came from the window itself or the known frontmost application. */
+  source?: "window" | "application";
   error?: string;
 }

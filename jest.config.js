@@ -9,6 +9,10 @@ const createJestConfig = nextJest({
 const customJestConfig = {
   setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
   testEnvironment: 'jest-environment-node',
+  // The suite includes live macOS integrations and shared local resources.
+  // Keep one worker so `npm test` remains stable instead of relying on a
+  // separate `--runInBand` invocation.
+  maxWorkers: 1,
   testMatch: ['**/__tests__/**/*.test.ts', '**/__tests__/**/*.test.tsx'],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/$1',

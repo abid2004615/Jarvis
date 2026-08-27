@@ -35,7 +35,9 @@ export function initializeAIRouter(providerName: string, config?: AIProviderConf
     const provider = createAIProvider(providerName, config);
 
     if (!provider.isConfigured()) {
-      console.warn(`AI provider ${providerName} is not configured`);
+      if (process.env.NODE_ENV !== "production") {
+        console.warn(`AI provider ${providerName} is not configured`);
+      }
       return false;
     }
 
@@ -46,13 +48,15 @@ export function initializeAIRouter(providerName: string, config?: AIProviderConf
       provider,
       toolRegistry,
       systemPrompt: JARVIS_SYSTEM_PROMPT,
-      maxTokens: 1024,
+      maxTokens: 4096,
     });
     initializedEnvKey = envKey;
 
     return true;
   } catch (error) {
-    console.error(`Failed to initialize AI router: ${error instanceof Error ? error.message : String(error)}`);
+    if (process.env.NODE_ENV !== "production") {
+      console.error(`Failed to initialize AI router: ${error instanceof Error ? error.message : String(error)}`);
+    }
     return false;
   }
 }

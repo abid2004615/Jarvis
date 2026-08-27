@@ -24,9 +24,60 @@ import {
   openFolder,
   takeScreenshot,
   getActiveWindow,
+  listWindows,
+  focusApplication,
+  minimizeWindow,
+  closeWindow,
+  readClipboard,
+  writeClipboard,
+  clearClipboard,
+  listFiles,
+  searchFiles,
+  openFile,
+  revealInFinder,
+  isSafariRunning,
+  getSafariState,
+  openUrlInSafari,
+  newSafariTab,
+  closeSafari,
+  closeSafariTab,
+  isVSCodeRunning,
+  focusVSCode,
+  openVSCode,
+  getUpcomingEvents,
+  getTodayEvents,
+  createCalendarEvent,
+  isMusicRunning,
+  getMusicState,
+  controlMusic,
+  playTrack,
+  getSystemSnapshot,
+  resolveApplicationName,
 } from "@/lib/macos";
 import { ToolRegistry, ToolInputValidator } from "./types";
 import { getMemoryManager, type MemoryCategory } from "@/lib/memory";
+import {
+  buildScreenContext,
+  performOCR,
+  captureScreenTemp,
+  deleteTempScreenshot,
+  getLastContext,
+  hasVisualContent,
+  wrapAsUntrustedScreenContent,
+  checkScreenRecordingPermission,
+  checkOCR,
+} from "@/lib/vision";
+import {
+  checkAccessibilityPermission,
+  queryAccessibilityElements,
+  resolveTarget,
+  validateAction,
+  executeWithVerification,
+  detectHighRiskAction,
+  getConfirmationDescription,
+  resetChainCounters,
+  ALLOWED_KEYS,
+} from "@/lib/computer-use";
 
 /**
  * Get current system time
@@ -661,6 +712,203 @@ export const TAKE_SCREENSHOT_TOOL: ToolDefinition = {
 };
 
 /**
+ * Get the current screen context — frontmost app, active window, and OCR text.
+ * Read-only; captures screen, performs OCR, returns structured context.
+ * The screenshot is deleted after analysis.
+ */
+export const GET_SCREEN_CONTEXT_TOOL: ToolDefinition = {
+  name: "get_screen_context",
+  description:
+    "Capture the current screen, perform OCR, and return a structured context including the frontmost application, active window title, and all visible text. Read-only; the screenshot is deleted after analysis. Use when the user asks what they are looking at, what application they are using, or wants to understand what is on their screen.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async () => {
+    const permission = checkScreenRecordingPermission();
+    if (permission !== "granted") {
+      return {
+        available: false,
+        error: "Screen Recording permission is required to see your screen.",
+        permission,
+      };
+    }
+
+    const context = buildScreenContext();
+    return {
+      available: true,
+      frontmostApplication: context.frontmostApplication ?? null,
+      activeWindow: context.activeWindow ?? null,
+      screenshotAvailable: context.screenshotAvailable,
+      screenDimensions: context.screenDimensions ?? null,
+      ocrText: context.ocrText ?? null,
+      ocrConfidence: context.ocrConfidence ?? null,
+      ocrBlockCount: context.ocrBlockCount ?? 0,
+      capturedAt: context.capturedAt,
+    };
+  },
+};
+
+/**
+ * Capture a screenshot and return its path.
+ * The screenshot is saved to a temporary location and should be deleted after use.
+ */
+export const CAPTURE_SCREEN_TOOL: ToolDefinition = {
+  name: "capture_screen",
+  description:
+    "Capture a screenshot of the current screen. Returns the temporary file path. The screenshot should be analyzed and then deleted. Use only when the user explicitly asks to capture or save a screenshot.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "confirmation",
+  requiresUserConfirmation: true,
+  execute: async () => {
+    const permission = checkScreenRecordingPermission();
+    if (permission !== "granted") {
+      return {
+        success: false,
+        error: "Screen Recording permission is required to capture the screen.",
+      };
+    }
+
+    const result = captureScreenTemp();
+    if (result.success && result.path) {
+      const ocr = performOCR(result.path);
+      deleteTempScreenshot(result.path);
+      return {
+        success: true,
+        width: result.width,
+        height: result.height,
+        ocrText: ocr.text || null,
+        ocrConfidence: ocr.confidence || null,
+        ocrBlockCount: ocr.blockCount || 0,
+        message: "Screenshot captured and analyzed. Temporary file deleted.",
+      };
+    }
+    return { success: false, error: result.error };
+  },
+};
+
+/**
+ * Read text from the current screen via OCR.
+ * Read-only; captures screen, performs OCR, returns text, deletes screenshot.
+ */
+export const READ_SCREEN_TEXT_TOOL: ToolDefinition = {
+  name: "read_screen_text",
+  description:
+    "Capture the screen and extract all visible text using OCR. Returns the extracted text with confidence scores. Read-only; the screenshot is deleted after text extraction. Use when the user asks to read, transcribe, or extract text from their screen.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async () => {
+    const permission = checkScreenRecordingPermission();
+    if (permission !== "granted") {
+      return {
+        available: false,
+        error: "Screen Recording permission is required to read screen text.",
+      };
+    }
+
+    const ocrAvailable = checkOCR();
+    if (ocrAvailable !== "available") {
+      return {
+        available: false,
+        error: "OCR engine is not available on this system.",
+      };
+    }
+
+    const capture = captureScreenTemp();
+    if (!capture.success || !capture.path) {
+      return { available: false, error: capture.error };
+    }
+
+    const ocr = performOCR(capture.path);
+    deleteTempScreenshot(capture.path);
+
+    if (ocr.error) {
+      return { available: false, error: ocr.error };
+    }
+
+    return {
+      available: true,
+      text: ocr.text,
+      confidence: ocr.confidence,
+      blockCount: ocr.blockCount,
+      blocks: ocr.blocks,
+    };
+  },
+};
+
+/**
+ * Analyze the screen content and provide a summary.
+ * Combines frontmost app, window title, and OCR text.
+ */
+export const ANALYZE_SCREEN_TOOL: ToolDefinition = {
+  name: "analyze_screen",
+  description:
+    "Capture the screen, perform OCR, and provide a structured analysis of what is visible. Returns the frontmost application, window title, and a description of the visible content. Read-only; the screenshot is deleted after analysis. Use when the user asks to analyze, summarize, or understand what is on their screen.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async () => {
+    const permission = checkScreenRecordingPermission();
+    if (permission !== "granted") {
+      return {
+        available: false,
+        error: "Screen Recording permission is required to analyze the screen.",
+      };
+    }
+
+    const context = buildScreenContext();
+    const parts: string[] = [];
+
+    if (context.frontmostApplication?.name) {
+      parts.push(`Active application: ${context.frontmostApplication.name}`);
+    }
+    if (context.activeWindow?.title) {
+      parts.push(`Window: ${context.activeWindow.title}`);
+    }
+    if (context.screenDimensions) {
+      parts.push(`Screen: ${context.screenDimensions.width}x${context.screenDimensions.height}`);
+    }
+    if (context.ocrText) {
+      parts.push(`Visible text (${context.ocrBlockCount} blocks, ${Math.round((context.ocrConfidence ?? 0) * 100)}% confidence):`);
+      parts.push(wrapAsUntrustedScreenContent(context.ocrText));
+    } else if (context.screenshotAvailable) {
+      parts.push("Screenshot captured but no text could be extracted.");
+    } else {
+      parts.push("No screenshot available.");
+    }
+
+    return {
+      available: true,
+      analysis: parts.join("\n"),
+      frontmostApplication: context.frontmostApplication ?? null,
+      activeWindow: context.activeWindow ?? null,
+      hasText: !!(context.ocrText && context.ocrText.length > 0),
+      ocrConfidence: context.ocrConfidence ?? null,
+    };
+  },
+};
+
+/**
  * Get the application currently in the foreground (read-only, safe).
  */
 export const GET_FRONTMOST_APPLICATION_TOOL: ToolDefinition = {
@@ -745,13 +993,13 @@ export const GET_SYSTEM_SUMMARY_TOOL: ToolDefinition = {
 
 /**
  * Get the title of the currently active application window (read-only, safe).
- * macOS requires Accessibility permission for this; when unavailable JARVIS
- * returns an honest `active_window_unavailable` instead of fabricating data.
+ * macOS requires Accessibility permission for a window title. When only the
+ * frontmost application is available, JARVIS labels that fallback explicitly.
  */
 export const GET_ACTIVE_WINDOW_TOOL: ToolDefinition = {
   name: "get_active_window",
   description:
-    "Get the title of the currently active application window. Read-only. Requires macOS accessibility permission for System Events; when that permission is unavailable JARVIS honestly reports the window as unavailable rather than guessing. Use when the user asks what window they are currently looking at.",
+    "Get the title of the currently active application window. Read-only. Requires macOS accessibility permission for System Events; when a window title is unavailable, JARVIS may return the known frontmost application with source 'application'. Use when the user asks what window they are currently looking at.",
   inputSchema: {
     type: "object",
     properties: {},
@@ -772,7 +1020,8 @@ export const GET_ACTIVE_WINDOW_TOOL: ToolDefinition = {
     return {
       success: true,
       title: result.title,
-      message: "Active window retrieved",
+      source: result.source ?? "window",
+      message: result.source === "application" ? "Frontmost application retrieved; window title unavailable" : "Active window retrieved",
     };
   },
 };
@@ -986,6 +1235,856 @@ export const NOTIFY_USER_TOOL: ToolDefinition = {
   },
 };
 
+// ============================================================================
+// P9 — Deep macOS Integration Tools
+// ============================================================================
+
+/**
+ * Get the current clipboard contents. Read-only.
+ * Credential-like content is masked in the response.
+ */
+export const GET_CLIPBOARD_TOOL: ToolDefinition = {
+  name: "get_clipboard",
+  description:
+    "Read the current clipboard contents. Read-only; does not change anything. Sensitive credential-like content (API keys, passwords, tokens) is automatically masked and not repeated. Use when the user asks 'what's in my clipboard?' or 'paste from clipboard'.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async () => {
+    const result = readClipboard();
+    if (!result.available) {
+      return { available: false, error: result.error };
+    }
+    return {
+      available: true,
+      content: result.isCredentialLike ? result.maskedContent : result.content,
+      isCredentialLike: result.isCredentialLike,
+      length: result.length,
+    };
+  },
+};
+
+/**
+ * Set the clipboard to a specific text value.
+ * Does not persist the content internally.
+ */
+export const SET_CLIPBOARD_TOOL: ToolDefinition = {
+  name: "set_clipboard",
+  description:
+    "Write text to the system clipboard. Use when the user asks to copy something to the clipboard. The content is not persisted or logged by JARVIS.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      text: { type: "string", description: "The text to copy to the clipboard" },
+    },
+    required: ["text"],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async (input) => {
+    const text = typeof input.text === "string" ? input.text : "";
+    if (!text) return { success: false, message: "Text is required" };
+    const result = writeClipboard(text);
+    return { success: result.success, message: result.message };
+  },
+};
+
+/**
+ * Clear the clipboard contents.
+ */
+export const CLEAR_CLIPBOARD_TOOL: ToolDefinition = {
+  name: "clear_clipboard",
+  description:
+    "Clear the system clipboard. Use when the user asks to clear or empty the clipboard.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async () => {
+    const result = clearClipboard();
+    return { success: result.success, message: result.message };
+  },
+};
+
+/**
+ * List all visible windows across applications.
+ */
+export const LIST_WINDOWS_TOOL: ToolDefinition = {
+  name: "list_windows",
+  description:
+    "List all visible windows across all running applications. Returns the application name and window title for each. Read-only; does not change anything. Use when the user asks what windows are open or what's on their screen.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async () => {
+    const result = listWindows();
+    return {
+      available: result.available,
+      windows: result.windows,
+      count: result.count,
+      error: result.error,
+    };
+  },
+};
+
+/**
+ * Focus (bring to front) an application.
+ */
+export const FOCUS_APPLICATION_TOOL: ToolDefinition = {
+  name: "focus_application",
+  description:
+    "Bring an application to the foreground (focus its window). Only allowlisted applications may be focused. Use when the user says 'switch to', 'bring up', or 'focus' an application. Does not launch the app — it must already be running.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      application: { type: "string", description: "Application name to focus (e.g. Safari, Chrome)" },
+    },
+    required: ["application"],
+    additionalProperties: false,
+  },
+  riskLevel: "confirmation",
+  requiresUserConfirmation: true,
+  execute: async (input) => {
+    const appName = typeof input.application === "string" ? input.application : "";
+    if (!appName) return { success: false, message: "Application name required" };
+    const app = resolveApplicationName(appName);
+    if (!app) return { success: false, message: `Application '${appName}' is not in the approved allowlist` };
+    const result = focusApplication(app.name);
+    return { success: result.success, application: result.application, message: result.message };
+  },
+};
+
+/**
+ * Minimize the front window of an application.
+ */
+export const MINIMIZE_WINDOW_TOOL: ToolDefinition = {
+  name: "minimize_window",
+  description:
+    "Minimize the front window of an application. Use when the user says 'minimize' or 'hide' an application window. Only allowlisted applications may be minimized. This action requires user confirmation.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      application: { type: "string", description: "Application name to minimize (e.g. Safari, Chrome)" },
+    },
+    required: ["application"],
+    additionalProperties: false,
+  },
+  riskLevel: "confirmation",
+  requiresUserConfirmation: true,
+  execute: async (input) => {
+    const appName = typeof input.application === "string" ? input.application : "";
+    if (!appName) return { success: false, message: "Application name required" };
+    const app = resolveApplicationName(appName);
+    if (!app) return { success: false, message: `Application '${appName}' is not in the approved allowlist` };
+    const result = minimizeWindow(app.name);
+    return { success: result.success, application: result.application, message: result.message };
+  },
+};
+
+/**
+ * Close the front window of an application.
+ */
+export const CLOSE_WINDOW_TOOL: ToolDefinition = {
+  name: "close_window",
+  description:
+    "Close the front window of an application (not quit the app). Use when the user says 'close this window' or 'close the current window'. Only allowlisted applications may be affected. This action requires user confirmation.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      application: { type: "string", description: "Application name whose window to close (e.g. Safari, Chrome)" },
+    },
+    required: ["application"],
+    additionalProperties: false,
+  },
+  riskLevel: "confirmation",
+  requiresUserConfirmation: true,
+  execute: async (input) => {
+    const appName = typeof input.application === "string" ? input.application : "";
+    if (!appName) return { success: false, message: "Application name required" };
+    const app = resolveApplicationName(appName);
+    if (!app) return { success: false, message: `Application '${appName}' is not in the approved allowlist` };
+    const result = closeWindow(app.name);
+    return { success: result.success, application: result.application, message: result.message };
+  },
+};
+
+/**
+ * List files in an allowlisted folder.
+ */
+export const LIST_FILES_TOOL: ToolDefinition = {
+  name: "list_files",
+  description:
+    "List files and folders in an allowlisted directory (Downloads, Documents, Desktop, Pictures, Movies, Music). Read-only. Returns file names, sizes, and modification dates. Use when the user asks to see what's in a folder.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      folder: { type: "string", description: "Allowlisted folder name (Downloads, Documents, Desktop, Pictures, Movies, Music)" },
+    },
+    required: ["folder"],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async (input) => {
+    const folder = typeof input.folder === "string" ? input.folder : "";
+    if (!folder) return { available: false, error: "Folder name required" };
+    const result = listFiles(folder);
+    return {
+      available: result.available,
+      files: result.files.map((f) => ({ name: f.name, size: f.size, isDirectory: f.isDirectory, modified: f.modified })),
+      count: result.count,
+      folder: result.folder,
+      error: result.error,
+    };
+  },
+};
+
+/**
+ * Search for files within an allowlisted folder.
+ */
+export const SEARCH_FILES_TOOL: ToolDefinition = {
+  name: "search_files",
+  description:
+    "Search for files by name within an allowlisted directory (Downloads, Documents, Desktop, Pictures, Movies, Music). Uses Spotlight search. Read-only. Use when the user asks to find or search for files.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      folder: { type: "string", description: "Allowlisted folder to search within" },
+      query: { type: "string", description: "Search query (file name or content)" },
+    },
+    required: ["folder", "query"],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async (input) => {
+    const folder = typeof input.folder === "string" ? input.folder : "";
+    const query = typeof input.query === "string" ? input.query : "";
+    if (!folder || !query) return { available: false, error: "Folder and query required" };
+    const result = searchFiles(folder, query);
+    return {
+      available: result.available,
+      results: result.results.map((f) => ({ name: f.name, path: f.path, size: f.size, isDirectory: f.isDirectory })),
+      count: result.count,
+      query: result.query,
+      error: result.error,
+    };
+  },
+};
+
+/**
+ * Open a file in its default application.
+ */
+export const OPEN_FILE_TOOL: ToolDefinition = {
+  name: "open_file",
+  description:
+    "Open a file in its default application. The file must be within an allowlisted directory (Downloads, Documents, Desktop, Pictures, Movies, Music). Path traversal is rejected. This action requires user confirmation.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      folder: { type: "string", description: "Allowlisted folder containing the file" },
+      path: { type: "string", description: "Relative path within the folder (e.g. 'report.pdf' or 'subfolder/file.txt')" },
+    },
+    required: ["folder", "path"],
+    additionalProperties: false,
+  },
+  riskLevel: "confirmation",
+  requiresUserConfirmation: true,
+  execute: async (input) => {
+    const folder = typeof input.folder === "string" ? input.folder : "";
+    const filePath = typeof input.path === "string" ? input.path : "";
+    if (!folder || !filePath) return { success: false, message: "Folder and path required" };
+    const result = openFile(folder, filePath);
+    return { success: result.success, message: result.message };
+  },
+};
+
+/**
+ * Reveal a file in Finder.
+ */
+export const REVEAL_FILE_TOOL: ToolDefinition = {
+  name: "reveal_file",
+  description:
+    "Reveal (select) a file in Finder. The file must be within an allowlisted directory. This action requires user confirmation.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      folder: { type: "string", description: "Allowlisted folder containing the file" },
+      path: { type: "string", description: "Relative path within the folder" },
+    },
+    required: ["folder", "path"],
+    additionalProperties: false,
+  },
+  riskLevel: "confirmation",
+  requiresUserConfirmation: true,
+  execute: async (input) => {
+    const folder = typeof input.folder === "string" ? input.folder : "";
+    const filePath = typeof input.path === "string" ? input.path : "";
+    if (!folder || !filePath) return { success: false, message: "Folder and path required" };
+    const result = revealInFinder(folder, filePath);
+    return { success: result.success, message: result.message };
+  },
+};
+
+/**
+ * Get the current Safari state (tabs, URL, title).
+ */
+export const GET_SAFARI_STATE_TOOL: ToolDefinition = {
+  name: "get_safari_state",
+  description:
+    "Get the current Safari state including the current tab title, URL, and tab count. Read-only. Use when the user asks what they're browsing, what website they're on, or what Safari is showing.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async () => {
+    const result = getSafariState();
+    return {
+      available: result.available,
+      isRunning: result.isRunning,
+      currentTab: result.currentTab ?? null,
+      tabCount: result.tabCount ?? 0,
+      error: result.error,
+    };
+  },
+};
+
+/**
+ * Open a URL in Safari. URL is validated for safe schemes only.
+ */
+export const OPEN_URL_IN_SAFARI_TOOL: ToolDefinition = {
+  name: "open_url_in_safari",
+  description:
+    "Open a URL in Safari. Only safe http and https URLs are allowed. JavaScript, file, data, and credential-bearing URLs are rejected. Use when the user asks to open a website or navigate to a URL. This action may require user confirmation depending on the URL.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      url: { type: "string", description: "The URL to open (must be http or https)" },
+    },
+    required: ["url"],
+    additionalProperties: false,
+  },
+  riskLevel: "confirmation",
+  requiresUserConfirmation: true,
+  execute: async (input) => {
+    const url = typeof input.url === "string" ? input.url : "";
+    if (!url) return { success: false, message: "URL is required" };
+    const result = openUrlInSafari(url);
+    return { success: result.success, message: result.message };
+  },
+};
+
+/**
+ * Create a new Safari tab.
+ */
+export const NEW_SAFARI_TAB_TOOL: ToolDefinition = {
+  name: "new_safari_tab",
+  description:
+    "Create a new tab in Safari. Use when the user asks to open a new tab or open something in a new tab.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async () => {
+    const result = newSafariTab();
+    return { success: result.success, message: result.message };
+  },
+};
+
+/**
+ * Close the current Safari tab.
+ */
+export const CLOSE_SAFARI_TAB_TOOL: ToolDefinition = {
+  name: "close_safari_tab",
+  description:
+    "Close the current tab in Safari. Use when the user asks to close the current tab. This action requires user confirmation.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "confirmation",
+  requiresUserConfirmation: true,
+  execute: async () => {
+    const result = closeSafariTab();
+    return { success: result.success, message: result.message };
+  },
+};
+
+/**
+ * Get the current Music/Apple Music playback state.
+ */
+export const GET_MUSIC_STATE_TOOL: ToolDefinition = {
+  name: "get_music_state",
+  description:
+    "Get the current Apple Music playback state including the playing track name, artist, album, and playback position. Read-only. Use when the user asks 'what's playing?' or 'what song is this?'.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async () => {
+    const result = getMusicState();
+    return {
+      available: result.available,
+      isRunning: result.isRunning,
+      playerState: result.playerState,
+      currentTrack: result.currentTrack ?? null,
+      error: result.error,
+    };
+  },
+};
+
+/**
+ * Control Music playback (play, pause, next, previous).
+ */
+export const CONTROL_MUSIC_TOOL: ToolDefinition = {
+  name: "control_music",
+  description:
+    "Control Apple Music playback. Actions: play (resume), pause, next (skip to next track), previous (go to previous track). Use for commands like 'play music', 'pause', 'next song'. Safe — does not require confirmation.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      action: {
+        type: "string",
+        enum: ["play", "pause", "next", "previous"],
+        description: "Playback action to perform",
+      },
+    },
+    required: ["action"],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async (input) => {
+    const action = typeof input.action === "string" ? input.action : "";
+    if (!["play", "pause", "next", "previous"].includes(action)) {
+      return { success: false, message: "Action must be one of: play, pause, next, previous" };
+    }
+    const result = controlMusic(action as "play" | "pause" | "next" | "previous");
+    return { success: result.success, message: result.message };
+  },
+};
+
+/**
+ * Search and play a track in Music.
+ */
+export const PLAY_TRACK_TOOL: ToolDefinition = {
+  name: "play_track",
+  description:
+    "Search for and play a track in Apple Music. Provide a song name, artist name, or search query. Use when the user asks to play a specific song or artist.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "Song name, artist name, or search query" },
+    },
+    required: ["query"],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async (input) => {
+    const query = typeof input.query === "string" ? input.query : "";
+    if (!query) return { success: false, message: "Query is required" };
+    const result = playTrack(query);
+    return { success: result.success, message: result.message };
+  },
+};
+
+/**
+ * Get a unified system snapshot with all available telemetry.
+ */
+export const GET_SYSTEM_SNAPSHOT_TOOL: ToolDefinition = {
+  name: "get_system_snapshot",
+  description:
+    "Get a complete system snapshot: CPU, memory, disk, battery, network, uptime, frontmost application, active window, running applications, and process summary. All data is real; unavailable values are omitted. Use when the user asks for an overview of the system or 'how's my Mac doing?'.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async () => {
+    return getSystemSnapshot();
+  },
+};
+
+/**
+ * Get today's calendar events.
+ */
+export const GET_TODAY_EVENTS_TOOL: ToolDefinition = {
+  name: "get_today_events",
+  description:
+    "Get today's calendar events from Apple Calendar. Read-only. Returns event titles, start/end times, and calendar names. Use when the user asks 'what's on my calendar today?' or 'do I have any meetings today?'.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async () => {
+    const result = getTodayEvents();
+    return {
+      available: result.available,
+      events: result.events,
+      count: result.count,
+      error: result.error,
+    };
+  },
+};
+
+/**
+ * Get upcoming calendar events for the next N days.
+ */
+export const GET_UPCOMING_EVENTS_TOOL: ToolDefinition = {
+  name: "get_upcoming_events",
+  description:
+    "Get upcoming calendar events for the next N days (default 7). Read-only. Use when the user asks 'what's coming up this week?' or 'what's on my calendar this week?'.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      days: { type: "integer", description: "Number of days ahead to look (default 7, max 30)" },
+    },
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async (input) => {
+    const days = typeof input.days === "number" ? Math.min(30, Math.max(1, Math.floor(input.days))) : 7;
+    const result = getUpcomingEvents(days);
+    return {
+      available: result.available,
+      events: result.events,
+      count: result.count,
+      dateRange: result.dateRange,
+      error: result.error,
+    };
+  },
+};
+
+/**
+ * Create a calendar event. Requires confirmation.
+ */
+export const CREATE_CALENDAR_EVENT_TOOL: ToolDefinition = {
+  name: "create_calendar_event",
+  description:
+    "Create a new event in Apple Calendar. Requires a title and start date/time. End date defaults to 1 hour after start if not provided. This action requires user confirmation — JARVIS will never silently create appointments.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      title: { type: "string", description: "Event title (e.g. 'Team meeting')" },
+      startDate: { type: "string", description: "Start date/time (e.g. 'Monday at 3 PM', '2026-08-20 14:00')" },
+      endDate: { type: "string", description: "End date/time (optional, defaults to 1 hour after start)" },
+      location: { type: "string", description: "Event location (optional)" },
+      calendar: { type: "string", description: "Calendar name (optional, defaults to default calendar)" },
+    },
+    required: ["title", "startDate"],
+    additionalProperties: false,
+  },
+  riskLevel: "confirmation",
+  requiresUserConfirmation: true,
+  execute: async (input) => {
+    const title = typeof input.title === "string" ? input.title : "";
+    const startDate = typeof input.startDate === "string" ? input.startDate : "";
+    const endDate = typeof input.endDate === "string" ? input.endDate : undefined;
+    const location = typeof input.location === "string" ? input.location : undefined;
+    const calendar = typeof input.calendar === "string" ? input.calendar : undefined;
+    if (!title || !startDate) return { success: false, message: "Title and start date required" };
+    const result = createCalendarEvent(title, startDate, endDate, location, calendar);
+    return { success: result.success, message: result.message, event: result.event };
+  },
+};
+
+/**
+ * Get VS Code state (running or not).
+ */
+export const GET_VSCODE_STATE_TOOL: ToolDefinition = {
+  name: "get_vscode_state",
+  description:
+    "Check if Visual Studio Code is running. Read-only. Use when the user asks if VS Code is open or running.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async () => {
+    const { getVSCodeState } = require("@/lib/macos");
+    const result = getVSCodeState();
+    return { available: result.available, isRunning: result.isRunning, error: result.error };
+  },
+};
+
+/**
+ * Focus VS Code (bring to front).
+ */
+export const FOCUS_VSCODE_TOOL: ToolDefinition = {
+  name: "focus_vscode",
+  description:
+    "Bring Visual Studio Code to the foreground. Use when the user says 'switch to VS Code' or 'bring up VS Code'. This action requires user confirmation.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "confirmation",
+  requiresUserConfirmation: true,
+  execute: async () => {
+    const result = focusVSCode();
+    return { success: result.success, message: result.message };
+  },
+};
+
+// ── Computer Use Tools ────────────────────────────────────────────────────────
+
+/**
+ * Click a UI element by role and label. Requires target resolution + confirmation.
+ */
+export const COMPUTER_CLICK_TOOL: ToolDefinition = {
+  name: "computer_click",
+  description:
+    "Click a UI element on screen. Specify the element by its role (button, link, text, input, tab, menu, checkbox) and label text. The system will locate the element via accessibility APIs or OCR, validate it, and click the center. Requires user confirmation.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      role: {
+        type: "string",
+        description: "The UI role of the target element (button, link, text, input, tab, menu, checkbox)",
+      },
+      label: {
+        type: "string",
+        description: "The visible text label of the element to click",
+      },
+      application: {
+        type: "string",
+        description: "Optional: expected application name (for validation)",
+      },
+    },
+    required: ["label"],
+    additionalProperties: false,
+  },
+  riskLevel: "confirmation",
+  requiresUserConfirmation: true,
+  execute: async (input) => {
+    const { validateAction, executeWithVerification } = require("@/lib/computer-use/planner");
+    const action: import("@/lib/computer-use/types").ComputerAction = {
+      type: "click",
+      target: {
+        role: (input.role as string || "unknown") as import("@/lib/computer-use/types").UIRole,
+        label: input.label as string,
+        application: input.application as string | undefined,
+        source: "application",
+      },
+      application: input.application as string | undefined,
+    };
+
+    const validation = validateAction(action);
+    if (!validation.valid) {
+      return { success: false, error: validation.error, needsClarification: validation.needsClarification, candidates: validation.candidates };
+    }
+
+    // Replace target with resolved target for execution
+    if (validation.resolvedTarget) {
+      action.target = validation.resolvedTarget as unknown as import("@/lib/computer-use/types").UIElementTarget;
+    }
+
+    const execResult = executeWithVerification(action);
+    return {
+      success: execResult.result.status === "success",
+      status: execResult.result.status,
+      message: execResult.result.message,
+      verified: execResult.verified,
+      error: execResult.result.error,
+    };
+  },
+};
+
+/**
+ * Type text into a focused field. Requires confirmation.
+ */
+export const COMPUTER_TYPE_TOOL: ToolDefinition = {
+  name: "computer_type",
+  description:
+    "Type text into the currently focused input field. The text is typed character by character using System Events. Credential-like content (passwords, API keys, tokens) is automatically rejected. Requires user confirmation.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      text: {
+        type: "string",
+        description: "The exact text to type",
+      },
+    },
+    required: ["text"],
+    additionalProperties: false,
+  },
+  riskLevel: "confirmation",
+  requiresUserConfirmation: true,
+  execute: async (input) => {
+    const { executeComputerAction } = require("@/lib/computer-use/executor");
+    const action = {
+      type: "type" as const,
+      value: input.text as string,
+    };
+    const result = executeComputerAction(action);
+    return {
+      success: result.status === "success",
+      status: result.status,
+      message: result.message,
+      error: result.error,
+    };
+  },
+};
+
+/**
+ * Scroll the current window. Low risk, but still requires confirmation.
+ */
+export const COMPUTER_SCROLL_TOOL: ToolDefinition = {
+  name: "computer_scroll",
+  description:
+    "Scroll the current window in a direction (up, down, left, right) by an amount (1-10, default 3). Low risk action but requires confirmation.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      direction: {
+        type: "string",
+        description: "Scroll direction: up, down, left, or right (default: down)",
+      },
+      amount: {
+        type: "number",
+        description: "Scroll amount 1-10 (default: 3)",
+      },
+    },
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "confirmation",
+  requiresUserConfirmation: true,
+  execute: async (input) => {
+    const { executeComputerAction } = require("@/lib/computer-use/executor");
+    const action = {
+      type: "scroll" as const,
+      direction: (input.direction as import("@/lib/computer-use/types").ScrollDirection) || "down",
+      amount: typeof input.amount === "number" ? input.amount : 3,
+    };
+    const result = executeComputerAction(action);
+    return {
+      success: result.status === "success",
+      status: result.status,
+      message: result.message,
+      error: result.error,
+    };
+  },
+};
+
+/**
+ * Press a keyboard shortcut. Only allowlisted keys accepted. Requires confirmation.
+ */
+export const COMPUTER_KEYPRESS_TOOL: ToolDefinition = {
+  name: "computer_keypress",
+  description:
+    "Press a keyboard shortcut. Only allowlisted keys are accepted (enter, escape, tab, space, arrows, cmd+c/v/x/a/z/s/n/t/w/q, etc.). Arbitrary key combinations are rejected. Requires user confirmation.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      key: {
+        type: "string",
+        description: "The key to press (e.g., 'enter', 'escape', 'cmd+c', 'arrow_down')",
+      },
+    },
+    required: ["key"],
+    additionalProperties: false,
+  },
+  riskLevel: "confirmation",
+  requiresUserConfirmation: true,
+  execute: async (input) => {
+    const { ALLOWED_KEYS } = require("@/lib/computer-use/types");
+    const key = (input.key as string || "").toLowerCase();
+    if (!ALLOWED_KEYS.has(key)) {
+      return { success: false, error: `Key "${key}" is not in the allowlist. Allowed keys: ${Array.from(ALLOWED_KEYS).join(", ")}` };
+    }
+    const { executeComputerAction } = require("@/lib/computer-use/executor");
+    const action = {
+      type: "keypress" as const,
+      key,
+    };
+    const result = executeComputerAction(action);
+    return {
+      success: result.status === "success",
+      status: result.status,
+      message: result.message,
+      error: result.error,
+    };
+  },
+};
+
+/**
+ * Get computer-use system status: accessibility permission, screen recording, etc.
+ */
+export const COMPUTER_USE_STATUS_TOOL: ToolDefinition = {
+  name: "computer_use_status",
+  description:
+    "Check the computer-use system status: accessibility permission, screen recording permission, and available capabilities. Read-only, no confirmation needed.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  riskLevel: "safe",
+  requiresUserConfirmation: false,
+  execute: async () => {
+    const { checkAccessibilityPermission } = require("@/lib/computer-use/accessibility");
+    const { checkScreenRecordingPermission } = require("@/lib/vision/permissions");
+    const { ALLOWED_KEYS, DEFAULT_RATE_LIMITS } = require("@/lib/computer-use/types");
+
+    const axPermission = checkAccessibilityPermission();
+    const screenPermission = checkScreenRecordingPermission();
+
+    return {
+      accessibility: axPermission,
+      screenRecording: screenPermission,
+      allowedKeys: Array.from(ALLOWED_KEYS),
+      rateLimits: DEFAULT_RATE_LIMITS,
+      computerUseReady: axPermission === "granted" && screenPermission === "granted",
+    };
+  },
+};
+
 /**
  * Get all built-in safe tools
  */
@@ -1013,6 +2112,39 @@ export function getBuiltinTools(): ToolDefinition[] {
     SET_VOLUME_TOOL,
     SET_BRIGHTNESS_TOOL,
     TAKE_SCREENSHOT_TOOL,
+    GET_SCREEN_CONTEXT_TOOL,
+    CAPTURE_SCREEN_TOOL,
+    READ_SCREEN_TEXT_TOOL,
+    ANALYZE_SCREEN_TOOL,
+    GET_CLIPBOARD_TOOL,
+    SET_CLIPBOARD_TOOL,
+    CLEAR_CLIPBOARD_TOOL,
+    LIST_WINDOWS_TOOL,
+    FOCUS_APPLICATION_TOOL,
+    MINIMIZE_WINDOW_TOOL,
+    CLOSE_WINDOW_TOOL,
+    LIST_FILES_TOOL,
+    SEARCH_FILES_TOOL,
+    OPEN_FILE_TOOL,
+    REVEAL_FILE_TOOL,
+    GET_SAFARI_STATE_TOOL,
+    OPEN_URL_IN_SAFARI_TOOL,
+    NEW_SAFARI_TAB_TOOL,
+    CLOSE_SAFARI_TAB_TOOL,
+    GET_MUSIC_STATE_TOOL,
+    CONTROL_MUSIC_TOOL,
+    PLAY_TRACK_TOOL,
+    GET_SYSTEM_SNAPSHOT_TOOL,
+    GET_TODAY_EVENTS_TOOL,
+    GET_UPCOMING_EVENTS_TOOL,
+    CREATE_CALENDAR_EVENT_TOOL,
+    GET_VSCODE_STATE_TOOL,
+    FOCUS_VSCODE_TOOL,
+    COMPUTER_CLICK_TOOL,
+    COMPUTER_TYPE_TOOL,
+    COMPUTER_SCROLL_TOOL,
+    COMPUTER_KEYPRESS_TOOL,
+    COMPUTER_USE_STATUS_TOOL,
     ECHO_TOOL,
     LIST_TOOLS_TOOL,
     REMEMBER_USER_PREFERENCE_TOOL,
@@ -1085,6 +2217,10 @@ export function describeToolAction(
       return "Change the screen brightness?";
     },
     take_screenshot: () => "Take a screenshot?",
+    get_screen_context: () => "Capture screen and get visual context",
+    capture_screen: () => "Capture a screenshot of the screen?",
+    read_screen_text: () => "Read text from the screen via OCR",
+    analyze_screen: () => "Analyze the screen content",
     get_volume_status: () => "Retrieve current volume status",
     get_brightness_status: () => "Retrieve current screen brightness",
     get_frontmost_application: () => "Retrieve the frontmost application",
@@ -1139,6 +2275,35 @@ export function describeToolAction(
     run_routine: (a) => `Run routine ${String(a.id ?? "unknown")} now`,
     delete_routine: (a) => `Delete routine ${String(a.id ?? "unknown")}?`,
     get_daily_briefing: () => "Retrieve the daily briefing",
+    get_clipboard: () => "Read the clipboard contents",
+    set_clipboard: (a) => `Set clipboard to: ${String(a.text ?? "").slice(0, 50)}...`,
+    clear_clipboard: () => "Clear the clipboard?",
+    list_windows: () => "List all visible windows",
+    focus_application: (a) => `Bring ${String(a.application ?? "unknown")} to front?`,
+    minimize_window: (a) => `Minimize ${String(a.application ?? "unknown")} window?`,
+    close_window: (a) => `Close ${String(a.application ?? "unknown")} front window?`,
+    list_files: (a) => `List files in ${String(a.folder ?? "unknown")}`,
+    search_files: (a) => `Search for "${String(a.query ?? "")}" in ${String(a.folder ?? "unknown")}`,
+    open_file: (a) => `Open ${String(a.path ?? "file")} in ${String(a.folder ?? "unknown")}?`,
+    reveal_file: (a) => `Reveal ${String(a.path ?? "file")} in Finder?`,
+    get_safari_state: () => "Get Safari state (tabs, URL)",
+    open_url_in_safari: (a) => `Open ${String(a.url ?? "URL")} in Safari?`,
+    new_safari_tab: () => "Create a new Safari tab",
+    close_safari_tab: () => "Close the current Safari tab?",
+    get_music_state: () => "Get current music playback state",
+    control_music: (a) => `${String(a.action ?? "play")} music`,
+    play_track: (a) => `Play "${String(a.query ?? "track")}" in Music`,
+    get_system_snapshot: () => "Retrieve complete system snapshot",
+    get_today_events: () => "Retrieve today's calendar events",
+    get_upcoming_events: (a) => `Retrieve calendar events for the next ${String(a.days ?? "7")} days`,
+    create_calendar_event: (a) => `Create calendar event "${String(a.title ?? "unknown")}"?`,
+    get_vscode_state: () => "Check if VS Code is running",
+    focus_vscode: () => "Bring VS Code to front?",
+    computer_click: (a) => `Click ${String(a.label ?? "element")} (${String(a.role ?? "unknown")})?`,
+    computer_type: (a) => `Type text into the active field?`,
+    computer_scroll: (a) => `Scroll ${String(a.direction ?? "down")} by ${String(a.amount ?? "3")} units?`,
+    computer_keypress: (a) => `Press ${String(a.key ?? "key")}?`,
+    computer_use_status: () => "Check computer-use system status",
   };
   return actionMap[toolName]?.(args) ?? description;
 }

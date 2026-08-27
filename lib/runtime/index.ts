@@ -8,12 +8,8 @@ export type {
   PendingToolCall,
   ToolExecutionResult,
   JarvisResponse,
-  ConfirmationDecision,
 } from "@/lib/runtime/types";
 
 export { ConversationContextManager, getConversationContextManager, resetConversationContextManager } from "@/lib/runtime/context";
 
 export { JarvisPipeline, getJarvisPipeline, resetJarvisPipeline } from "@/lib/runtime/pipeline";
-
-export { ConfirmationManager, getConfirmationManager, resetConfirmationManager } from "@/lib/runtime/confirmation";
-export type { ConfirmationRequest } from "@/lib/runtime/confirmation";

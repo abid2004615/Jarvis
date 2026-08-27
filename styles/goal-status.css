@@ -1,0 +1,106 @@
+/**
+ * Goal Status HUD Styles
+ */
+
+.goal-status {
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 0.75rem;
+  color: var(--foreground, #e0e0e0);
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  max-width: 320px;
+}
+
+.goal-status[data-state="running"] {
+  border-color: rgba(59, 130, 246, 0.4);
+}
+
+.goal-status[data-state="completed"] {
+  border-color: rgba(34, 197, 94, 0.4);
+}
+
+.goal-status[data-state="failed"] {
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+.goal-status[data-state="paused"] {
+  border-color: rgba(234, 179, 8, 0.4);
+}
+
+.goal-status[data-state="waiting_for_confirmation"],
+.goal-status[data-state="waiting_for_user"] {
+  border-color: rgba(168, 85, 247, 0.4);
+}
+
+.goal-status-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.goal-status-title {
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.goal-status-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.goal-status-state {
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  margin-bottom: 0.375rem;
+}
+
+.goal-progress {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.375rem;
+}
+
+.goal-progress-bar {
+  font-size: 0.625rem;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.goal-progress-pct {
+  font-size: 0.625rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.goal-status-step {
+  margin-bottom: 0.25rem;
+}
+
+.goal-status-step-label {
+  color: rgba(255, 255, 255, 0.5);
+  margin-right: 0.375rem;
+}
+
+.goal-status-step-text {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.goal-status-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.625rem;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.goal-status-error {
+  color: rgba(239, 68, 68, 0.8);
+}

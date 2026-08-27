@@ -223,6 +223,7 @@ export class GroqProvider extends BaseAIProvider {
       timeout: this.config.timeout,
       errorLabel: "Groq API error",
       maxTokensField: "max_completion_tokens",
+      reasoningEffort: true,
       context,
       userMessage,
     });
@@ -301,11 +302,17 @@ async function completeChat(
     timeout?: number;
     errorLabel: string;
     maxTokensField?: "max_tokens" | "max_completion_tokens";
+    reasoningEffort?: boolean;
     context: AssistantContext;
     userMessage: string;
   },
 ): Promise<AIProviderResponse> {
   const url = `${options.baseUrl}/chat/completions`;
+  const hasTools = Boolean(options.context.tools && options.context.tools.length > 0);
+
+  if (process.env.NODE_ENV !== "production") {
+    console.log(`[AI] provider request: model=${options.model} tools=${options.context.tools?.length ?? 0} maxTokens=${options.context.maxTokens ?? 1024} reasoning_effort=${options.reasoningEffort ? "low" : "off"}`);
+  }
 
   const messages: Array<Record<string, unknown>> = [];
   if (options.context.systemPrompt) {
@@ -343,9 +350,16 @@ async function completeChat(
   const body: Record<string, unknown> = {
     model: options.model,
     messages,
-    [options.maxTokensField || "max_tokens"]: options.context.maxTokens || 1024,
-    temperature: 0.7,
+    [options.maxTokensField || "max_tokens"]: options.context.maxTokens || 4096,
   };
+
+  // Reasoning models: use reasoning_effort to control token budget and
+  // omit temperature (not supported by all reasoning providers).
+  if (options.reasoningEffort) {
+    body.reasoning_effort = "low";
+  } else {
+    body.temperature = 0.7;
+  }
 
   const tools = options.context.tools;
   if (tools && tools.length > 0) {
@@ -369,6 +383,10 @@ async function completeChat(
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeout);
 
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[AI] request started (attempt ${attempt + 1}/${maxRetries})`);
+      }
+
       const response = await fetch(url, {
         method: "POST",
         headers: {
@@ -383,13 +401,29 @@ async function completeChat(
 
       if (!response.ok) {
         const errorData = (await response.json().catch(() => null)) as { error?: { message: string } } | null;
-        throw new Error(
+        const errorClassification = response.status === 401 || response.status === 403
+          ? "auth_failed"
+          : response.status === 429
+            ? "rate_limited"
+            : response.status === 400
+              ? "bad_request"
+              : response.status >= 500
+                ? "server_error"
+                : `http_${response.status}`;
+        if (process.env.NODE_ENV !== "production") {
+          console.error(`[AI] response error: status=${response.status} classification=${errorClassification}`);
+        }
+        const retryAfterHeader = response.headers.get("retry-after");
+        const retryAfterSeconds = retryAfterHeader ? parseInt(retryAfterHeader, 10) : undefined;
+        const err = new Error(
           safeProviderErrorMessage(
             options.errorLabel,
             response.status,
             errorData?.error?.message || response.statusText,
           ),
         );
+        (err as Error & { retryAfter?: number }).retryAfter = Number.isFinite(retryAfterSeconds) ? retryAfterSeconds : undefined;
+        throw err;
       }
 
       const data = (await response.json()) as {
@@ -401,8 +435,9 @@ async function completeChat(
               function: { name: string; arguments?: string };
             }>;
           };
+          finish_reason?: string;
         }>;
-        usage?: { prompt_tokens?: number; completion_tokens?: number };
+        usage?: { prompt_tokens?: number; completion_tokens?: number; reasoning_tokens?: number };
         model: string;
       };
 
@@ -413,6 +448,23 @@ async function completeChat(
           name: tc.function.name,
           arguments: parseToolArguments(tc.function.arguments),
         }));
+
+      const contentLength = data.choices[0]?.message.content?.length ?? 0;
+      const finishReason = data.choices[0]?.finish_reason ?? "unknown";
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[AI] response received: finish_reason=${finishReason} content=${contentLength > 0 ? "present" : "empty"} tool_calls=${toolCalls.length} tokens=${data.usage?.completion_tokens ?? "?"}/${data.usage?.prompt_tokens ?? "?"}`);
+      }
+
+      // Reasoning models may return empty content when reasoning budget is
+      // exhausted. If content is empty and no tool calls, this is likely a
+      // budget issue rather than a provider failure — return empty so the
+      // pipeline can derive a response instead of falling back.
+      if (!toolCalls.length && contentLength === 0 && finishReason === "length") {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn(`[AI] empty response due to reasoning budget exhaustion`);
+        }
+      }
+
       return {
         text: data.choices[0]?.message.content || "",
         toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
@@ -422,15 +474,34 @@ async function completeChat(
       };
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
+      const errorType = error instanceof ToolCallArgumentsError
+        ? "tool_args_parse_error"
+        : error instanceof DOMException && error.name === "AbortError"
+          ? "timeout"
+          : "request_error";
+      if (process.env.NODE_ENV !== "production") {
+        console.error(`[AI] error: type=${errorType} attempt=${attempt + 1}`);
+      }
       if (error instanceof ToolCallArgumentsError) {
         break;
       }
+      // For rate limits with long retry-after, don't hammer the provider
+      const retryAfter = (error as Error & { retryAfter?: number }).retryAfter;
+      if (retryAfter && retryAfter > 30) {
+        break;
+      }
       if (attempt < maxRetries - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+        const delay = retryAfter && retryAfter > 0
+          ? Math.min(retryAfter * 1000, 30000)
+          : 1000 * (attempt + 1);
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
   }
 
+  if (process.env.NODE_ENV !== "production") {
+    console.error(`[AI] request failed after ${maxRetries} attempts`);
+  }
   throw lastError || new Error(`${options.errorLabel}: request failed`);
 }
 

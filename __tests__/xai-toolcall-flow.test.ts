@@ -1,11 +1,11 @@
 /**
  * End-to-end regression for the xAI tool-calling path:
  * XAIProvider (mocked Grok tool_calls) -> AssistantService -> ToolRegistry
- * -> JarvisPipeline -> pendingConfirmation / WAITING_FOR_CONFIRMATION.
+ * -> JarvisPipeline -> immediate tool execution with results returned.
  *
  * This is the "exact failure" regression: a Grok tool call must NOT be
  * dropped and must NOT silently fall back to the offline message — it must
- * produce a confirmation request the client UI can approve/deny.
+ * reach the pipeline and execute, surfacing the executed results.
  * No real network calls and no real application launches happen here.
  */
 
@@ -28,7 +28,7 @@ const LAUNCH_TOOL: ToolDefinition = {
   },
   riskLevel: "confirmation",
   requiresUserConfirmation: true,
-  execute: async () => ({ launched: "never-called-in-this-test" }),
+  execute: async () => ({ launched: "Safari" }),
 };
 
 function grokToolCallResponse(toolName: string, argsJson: string): unknown {
@@ -69,7 +69,7 @@ function buildPipeline(fetchBody: unknown): {
   const pipeline = new JarvisPipeline({ assistant, registry });
 
   const requestBody = () => {
-    const call = fetchMock.mock.calls[fetchMock.mock.calls.length - 1];
+    const call = fetchMock.mock.calls[0];
     const [url, init] = call;
     return { url, ...JSON.parse((init as { body: string }).body) };
   };
@@ -86,18 +86,19 @@ describe("xAI tool-calling end-to-end flow", () => {
     delete (global as Record<string, unknown>).fetch;
   });
 
-  test("a Grok launch_application tool call reaches the pipeline and is confirmation-gated", async () => {
+  test("a Grok launch_application tool call reaches the pipeline and executes immediately", async () => {
     const { pipeline, requestBody } = buildPipeline(
       grokToolCallResponse("launch_application", '{"application":"Safari"}'),
     );
 
     const result = await pipeline.processUserInput("open safari");
 
-    expect(result.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-    expect(result.pendingConfirmation).toBeDefined();
-    expect(result.pendingConfirmation?.name).toBe("launch_application");
-    expect(result.pendingConfirmation?.humanReadableAction).toContain("Safari");
-    expect(result.toolsExecuted).toBeUndefined();
+    expect(result.state).toBe(JarvisRuntimeState.IDLE);
+    expect(result.pendingConfirmation).toBeUndefined();
+    expect(result.toolsExecuted?.[0]).toMatchObject({
+      toolName: "launch_application",
+      success: true,
+    });
 
     const sent = requestBody();
     expect(sent.url).toBe("https://api.x.ai/v1/chat/completions");
@@ -106,27 +107,6 @@ describe("xAI tool-calling end-to-end flow", () => {
     expect(sent.tools).toHaveLength(1);
     expect((sent.tools[0] as { function: { name: string } }).function.name).toBe("launch_application");
     expect((sent.tools[0] as { function: { parameters: { additionalProperties?: boolean } } }).function.parameters.additionalProperties).toBe(false);
-  });
-
-  test("after user approval the gated tool is executed (server-side confirm endpoint path)", async () => {
-    const { pipeline } = buildPipeline(
-      grokToolCallResponse("launch_application", '{"application":"Safari"}'),
-    );
-
-    const pending = await pipeline.processUserInput("open safari");
-    expect(pending.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-
-    const result = await pipeline.handleConfirmation({
-      toolId: pending.pendingConfirmation!.id,
-      approved: true,
-    });
-
-    expect(result.state).toBe(JarvisRuntimeState.IDLE);
-    expect(result.toolsExecuted?.[0]).toMatchObject({
-      toolName: "launch_application",
-      success: true,
-    });
-    expect(pipeline.getPendingConfirmations()).toHaveLength(0);
   });
 
   test("a Grok plain-text response completes normally without confirmation", async () => {

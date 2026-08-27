@@ -56,6 +56,18 @@ export {
 
 export {
   getActiveWindow,
+  listWindows,
+  focusApplication,
+  minimizeWindow,
+  closeWindow,
+  getScreenDimensions,
+} from "./window";
+
+export type {
+  WindowInfo,
+  WindowListResult,
+  WindowActionResult,
+  ScreenDimensions,
 } from "./window";
 
 export {
@@ -76,3 +88,92 @@ export {
   buildScreenshotPath,
   takeScreenshot,
 } from "./screenshot";
+
+export {
+  readClipboard,
+  writeClipboard,
+  clearClipboard,
+  isCredentialLike,
+} from "./clipboard";
+
+export type {
+  ClipboardReadResult,
+  ClipboardWriteResult,
+} from "./clipboard";
+
+export {
+  listFiles,
+  getFileMetadata,
+  searchFiles,
+  openFile,
+  revealInFinder,
+  createFolder,
+} from "./files";
+
+export type {
+  FileMetadata,
+  FileListResult,
+  FileSearchResult,
+  FileActionResult,
+} from "./files";
+
+export {
+  validateUrl as validateSafariUrl,
+  isSafariRunning,
+  getSafariState,
+  openUrlInSafari,
+  newSafariTab,
+  closeSafari,
+  closeSafariTab,
+} from "./apps/safari";
+
+export type {
+  SafariTab,
+  SafariState,
+  SafariActionResult,
+} from "./apps/safari";
+
+export {
+  isVSCodeRunning,
+  getVSCodeState,
+  focusVSCode,
+  openVSCode,
+} from "./apps/vscode";
+
+export type {
+  VSCodeState,
+  VSCodeActionResult,
+} from "./apps/vscode";
+
+export {
+  getUpcomingEvents,
+  getTodayEvents,
+  createCalendarEvent,
+} from "./calendar";
+
+export type {
+  CalendarEvent,
+  CalendarResult,
+  CalendarActionResult,
+} from "./calendar";
+
+export {
+  isMusicRunning,
+  getMusicState,
+  controlMusic,
+  playTrack,
+} from "./music";
+
+export type {
+  TrackInfo,
+  MusicState,
+  MusicActionResult,
+} from "./music";
+
+export {
+  getSystemSnapshot,
+} from "./system-snapshot";
+
+export type {
+  SystemSnapshot,
+} from "./system-snapshot";

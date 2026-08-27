@@ -7,6 +7,8 @@ export default defineConfig([
     ".next/**",
     "out/**",
     "build/**",
+    "release/**",
+    "electron/dist/**",
     "next-env.d.ts",
   ]),
 ]);

@@ -20,3 +20,6 @@ export type { TTSManager, TTSConfig } from "./tts";
 
 export { loadVoiceSettings, saveVoiceSettings, resetVoiceSettings } from "./settings";
 export type { VoiceSettings } from "./settings";
+
+export { isNativeVoiceAvailable, createNativeVoiceAdapter } from "./native";
+export type { NativeVoiceAdapter, NativeVoiceCallbacks } from "./native";

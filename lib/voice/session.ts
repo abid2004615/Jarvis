@@ -5,6 +5,8 @@
  * lifecycle. Maps to JarvisRuntimeState at each step. No global state duplication.
  *
  * Barge-in: uses VAD energy detection (single recognition, no competing instances).
+ *
+ * In packaged Electron mode, uses native Vosk STT via IPC instead of Web Speech API.
  */
 
 import { createMicrophoneManager, type MicPermissionState } from "./microphone";
@@ -12,6 +14,7 @@ import { createVoiceActivityDetector, type VoiceActivityDetector } from "./vad";
 import { detectWakeWord, stripWakeWord } from "./wake-word";
 import { createTTSManager, type TTSManager } from "./tts";
 import { loadVoiceSettings, saveVoiceSettings, type VoiceSettings } from "./settings";
+import { isNativeVoiceAvailable, createNativeVoiceAdapter, type NativeVoiceAdapter } from "./native";
 
 export type VoiceSessionState =
   | "idle"
@@ -42,6 +45,8 @@ export interface VoiceSession {
   pushToTalkStart: () => Promise<void>;
   pushToTalkEnd: () => void;
   processCommand: (text: string) => void;
+  /** Speak a response without changing recognition state or starting follow-up listening. */
+  speakText: (text: string) => void;
   handlePipelineResponse: (response: {
     message: string;
     pendingConfirmation?: { toolId: string; description: string } | null;
@@ -51,11 +56,19 @@ export interface VoiceSession {
   getSettings: () => VoiceSettings;
   updateSettings: (settings: Partial<VoiceSettings>) => void;
   getPermissionState: () => MicPermissionState;
+  retry: () => Promise<void>;
   destroy: () => void;
+  isElectron: () => boolean;
 }
 
 function isBrowser(): boolean {
   return typeof window !== "undefined";
+}
+
+function isElectron(): boolean {
+  if (!isBrowser()) return false;
+  const ua = navigator.userAgent;
+  return ua.includes("Electron");
 }
 
 interface SpeechRecognitionAlternativeLike {
@@ -108,8 +121,12 @@ export function createVoiceSession(
   let followUpTimer: ReturnType<typeof setTimeout> | null = null;
   let destroyed = false;
 
+  // Native voice adapter (packaged Electron mode)
+  const useNativeVoice = isElectron() && isNativeVoiceAvailable();
+  let nativeVoice: NativeVoiceAdapter | null = null;
+
   const SpeechRecognitionCtor: (new () => SpeechRecognitionInstance) | null =
-    isBrowser()
+    isBrowser() && !useNativeVoice
       ? ((window as unknown as Record<string, unknown>)["SpeechRecognition"] as (new () => SpeechRecognitionInstance) | undefined) ??
         ((window as unknown as Record<string, unknown>)["webkitSpeechRecognition"] as (new () => SpeechRecognitionInstance) | undefined) ??
         null
@@ -190,6 +207,17 @@ export function createVoiceSession(
 
     rec.onerror = (event: { error: string }) => {
       if (event.error === "no-speech" || event.error === "aborted") return;
+
+      // In packaged Electron, Web Speech API often fails with "network"
+      // because it requires Google's cloud servers which may be unreachable.
+      if (event.error === "network" && isElectron()) {
+        setState("error");
+        sessionCallbacks.onError?.(
+          "Speech recognition is unavailable in the packaged app. Use typed commands or the voice button for push-to-talk.",
+        );
+        return;
+      }
+
       setState("error");
       sessionCallbacks.onError?.(`Recognition error: ${event.error}`);
     };
@@ -247,11 +275,61 @@ export function createVoiceSession(
     destroyRecognition();
   };
 
+  const startNativeVoice = async () => {
+    if (!nativeVoice) {
+      nativeVoice = createNativeVoiceAdapter({
+        onStateChange: (nativeState: string) => {
+          if (destroyed) return;
+          // Map native states to session states
+          if (nativeState === "idle") {
+            setState("idle");
+          } else if (nativeState === "listening_for_wake") {
+            setState("listening");
+          } else if (nativeState === "listening_for_command") {
+            setState("listening");
+          }
+        },
+        onTranscript: (text: string, isFinal: boolean) => {
+          if (destroyed) return;
+          sessionCallbacks.onTranscript?.(text, isFinal);
+          if (isFinal && text.length > 0 && state !== "thinking") {
+            setState("transcribing");
+            processCommandInternal(text);
+          }
+        },
+        onAudioLevel: (level: number) => {
+          sessionCallbacks.onAudioLevel?.(level);
+        },
+        onError: (error: string) => {
+          if (destroyed) return;
+          setState("error");
+          sessionCallbacks.onError?.(error);
+        },
+      });
+    }
+    await nativeVoice.start();
+  };
+
   return {
     async start() {
       if (destroyed) return;
       cleanupTimers();
 
+      // Native voice path (packaged Electron)
+      if (useNativeVoice) {
+        setState("mic_requested");
+        sessionCallbacks.onStateChange?.("mic_requested");
+        try {
+          await startNativeVoice();
+          setState("listening");
+        } catch {
+          setState("error");
+          sessionCallbacks.onError?.("Failed to start native voice recognition.");
+        }
+        return;
+      }
+
+      // Browser path (Web Speech API)
       permissionState = await mic.requestPermission();
       setState("mic_requested");
       sessionCallbacks.onStateChange?.("mic_requested");
@@ -266,7 +344,14 @@ export function createVoiceSession(
         return;
       }
 
-      const stream = await mic.start();
+      let stream: MediaStream;
+      try {
+        stream = await mic.start();
+      } catch {
+        setState("error");
+        sessionCallbacks.onError?.("Failed to access microphone. Please check permissions.");
+        return;
+      }
       vad.attach(stream);
       vad.setCallbacks({
         onLevel: (level) => sessionCallbacks.onAudioLevel?.(level),
@@ -274,6 +359,8 @@ export function createVoiceSession(
           if (state === "speaking") {
             tts.interrupt();
             sessionCallbacks.onSpeakingEnd?.();
+            setState("listening");
+            startRecognition({ continuous: settings.wakeWordEnabled });
           }
         },
       });
@@ -286,7 +373,11 @@ export function createVoiceSession(
       if (destroyed) return;
       cleanupTimers();
       tts.cancel();
-      stopMic();
+      if (useNativeVoice) {
+        nativeVoice?.stop();
+      } else {
+        stopMic();
+      }
       setState("idle");
     },
 
@@ -299,6 +390,14 @@ export function createVoiceSession(
         sessionCallbacks.onSpeakingEnd?.();
       }
 
+      // Native voice path
+      if (useNativeVoice) {
+        setState("listening");
+        await startNativeVoice();
+        return;
+      }
+
+      // Browser path
       if (mic.getState() !== "active") {
         permissionState = await mic.requestPermission();
         if (permissionState !== "granted") {
@@ -329,13 +428,20 @@ export function createVoiceSession(
 
     pushToTalkEnd() {
       if (destroyed) return;
-      if (recognition) {
+      if (useNativeVoice) {
+        nativeVoice?.stop();
+      } else if (recognition) {
         recognition.stop();
       }
     },
 
     processCommand(text: string) {
       processCommandInternal(text);
+    },
+
+    speakText(text: string) {
+      if (destroyed || !settings.voiceResponseEnabled) return;
+      tts.speak(text);
     },
 
     handlePipelineResponse(response: {
@@ -398,13 +504,38 @@ export function createVoiceSession(
       return permissionState;
     },
 
+    async retry() {
+      if (destroyed) return;
+      if (useNativeVoice) {
+        nativeVoice?.stop();
+        nativeVoice?.destroy();
+        nativeVoice = null;
+      } else {
+        stopMic();
+      }
+      setState("idle");
+      await new Promise((r) => setTimeout(r, 200));
+      if (!destroyed) {
+        await this.start();
+      }
+    },
+
     destroy() {
       destroyed = true;
       cleanupTimers();
       tts.destroy();
       vad.destroy();
-      stopMic();
+      if (useNativeVoice) {
+        nativeVoice?.destroy();
+        nativeVoice = null;
+      } else {
+        stopMic();
+      }
       setState("idle");
+    },
+
+    isElectron() {
+      return isElectron();
     },
   };
 }

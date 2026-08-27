@@ -216,7 +216,7 @@ describe("P3.1 Natural Conversation", () => {
     expect(followUpBody.messages.filter((m) => m.role === "tool")).toHaveLength(1);
   });
 
-  test("natural-language approval resolves a pending confirmation server-side", async () => {
+  test("tool calls execute immediately without confirmation", async () => {
     const fetch = jest.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -228,75 +228,11 @@ describe("P3.1 Natural Conversation", () => {
 
     const pipeline = buildPipeline({ fetch, tools: [launchTool(launchSpy)] });
 
-    const pending = await pipeline.processUserInput("open safari");
-    expect(pending.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-
-    const result = await pipeline.processUserInput("yes", {
-      conversationId: pending.conversationId,
-    });
-
+    const result = await pipeline.processUserInput("open safari");
     expect(result.state).toBe(JarvisRuntimeState.IDLE);
     expect(result.message).toContain("executed successfully");
     expect(launchSpy).toHaveBeenCalledTimes(1);
     expect(launchSpy).toHaveBeenCalledWith({ application: "Safari" });
-    expect(pipeline.getPendingConfirmations()).toHaveLength(0);
-  });
-
-  test("natural-language denial cancels without side effects", async () => {
-    const fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      statusText: "OK",
-      json: async () => groqToolCallResponse("launch_application", '{"application":"Safari"}'),
-    });
-    global.fetch = fetch;
-    const launchSpy = jest.fn(async () => ({ launched: "Safari" }));
-
-    const pipeline = buildPipeline({ fetch, tools: [launchTool(launchSpy)] });
-
-    const pending = await pipeline.processUserInput("open safari");
-    expect(pending.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-
-    const result = await pipeline.processUserInput("actually don't", {
-      conversationId: pending.conversationId,
-    });
-
-    expect(result.state).toBe(JarvisRuntimeState.IDLE);
-    expect(result.message).toContain("Cancelled");
-    expect(launchSpy).not.toHaveBeenCalled();
-    expect(pipeline.getPendingConfirmations()).toHaveLength(0);
-  });
-
-  test("an ambiguous reply does not resolve a pending confirmation", async () => {
-    const fetch = jest.fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: "OK",
-        json: async () => groqToolCallResponse("launch_application", '{"application":"Safari"}'),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: "OK",
-        json: async () => groqTextResponse("I can tell you more about that."),
-      });
-    global.fetch = fetch;
-    const launchSpy = jest.fn(async () => ({ launched: "Safari" }));
-
-    const pipeline = buildPipeline({ fetch, tools: [launchTool(launchSpy)] });
-
-    const pending = await pipeline.processUserInput("open safari");
-    expect(pending.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-
-    const result = await pipeline.processUserInput("tell me about the weather", {
-      conversationId: pending.conversationId,
-    });
-
-    expect(result.state).toBe(JarvisRuntimeState.IDLE);
-    expect(result.message).toBe("I can tell you more about that.");
-    expect(launchSpy).not.toHaveBeenCalled();
-    expect(pipeline.getPendingConfirmations()).toHaveLength(1);
   });
 
   test("an ordinary conversational request requires no tool call", async () => {
@@ -315,7 +251,6 @@ describe("P3.1 Natural Conversation", () => {
 
     expect(result.state).toBe(JarvisRuntimeState.IDLE);
     expect(result.message).toBe("I am ready to help.");
-    expect(result.pendingConfirmation).toBeUndefined();
     expect(result.toolsExecuted).toBeUndefined();
     expect(captureRequests(fetch)).toHaveLength(1);
   });

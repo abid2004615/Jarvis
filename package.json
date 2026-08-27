@@ -1,7 +1,10 @@
 {
-  "name": "ultron-orb-ui",
+  "name": "jarvis-assistant",
   "version": "1.0.0",
+  "description": "JARVIS — Intelligent Personal Assistant for macOS",
+  "author": "JARVIS",
   "private": true,
+  "main": "electron/dist/main.js",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -9,7 +12,12 @@
     "lint": "eslint .",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage"
+    "test:coverage": "jest --coverage",
+    "electron:compile": "tsc -p electron/tsconfig.json",
+    "electron:dev": "npm run electron:compile && electron .",
+    "electron:build": "npm run build && npm run electron:compile",
+    "package": "npm run electron:build && electron-builder --mac",
+    "package:dir": "npm run electron:build && electron-builder --mac --dir"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.35",
@@ -25,15 +33,64 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/three": "^0.185.0",
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.3",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.3.1",
     "globals": "^17.11.0",
     "jest": "^30.4.2",
     "ts-jest": "^29.4.12",
-    "ts-node": "^10.9.2",
     "typescript": "^5"
   },
-  "allowScripts": {
-    "sharp@0.34.5": true
+  "build": {
+    "appId": "com.jarvis.assistant",
+    "productName": "JARVIS",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": ".next/standalone",
+        "to": "standalone"
+      },
+      {
+        "from": ".next/static",
+        "to": "standalone/.next/static"
+      },
+      {
+        "from": "companion/",
+        "to": "companion/"
+      }
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity",
+      "icon": null,
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "electron/entitlements.mac.plist",
+      "entitlementsInherit": "electron/entitlements.mac.plist"
+    },
+    "dmg": {
+      "title": "JARVIS",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
   }
 }

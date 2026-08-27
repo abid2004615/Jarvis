@@ -1,7 +1,7 @@
 import type { OrbMode } from "@/lib/jarvisState";
 import type { AssistantAPIResponse } from "@/lib/ai/types";
 import { JarvisRuntimeState, RUNTIME_STATE_TO_ORB_MODE } from "@/lib/runtime/types";
-import type { ActionChainStatus, PendingToolCall } from "@/lib/runtime/types";
+import type { ActionChainStatus } from "@/lib/runtime/types";
 import { routeAssistantCommand } from "@/lib/ai/fallback";
 import type { FallbackResult } from "@/lib/ai/fallback";
 
@@ -13,7 +13,6 @@ export interface AssistantResult {
   response: string;
   tool?: "getSystemStats" | "toggleMic" | "toggleCamera" | "openUrl" | "launchApp";
   state?: JarvisRuntimeState;
-  pendingConfirmation?: PendingToolCall;
   actionChain?: ActionChainStatus;
   conversationId?: string;
 }
@@ -54,7 +53,6 @@ export async function callAIAssistant(input: string, conversationId?: string): P
       mode,
       response: data.message,
       state: data.state ? (data.state as JarvisRuntimeState) : undefined,
-      pendingConfirmation: data.pendingConfirmation ?? undefined,
       actionChain: data.actionChain ?? undefined,
       conversationId: data.conversationId,
       tool: data.toolsExecuted?.[0]?.toolName as
@@ -68,52 +66,5 @@ export async function callAIAssistant(input: string, conversationId?: string): P
   } catch (error) {
     void error;
     return routeAssistantCommand(input);
-  }
-}
-
-/**
- * Send a confirmation decision for a pending tool call.
- */
-export async function confirmToolDecision(
-  toolId: string,
-  approved: boolean,
-  reason?: string,
-): Promise<AssistantResult> {
-  if (typeof fetch === "undefined") {
-    return { mode: "IDLE", response: approved ? "Confirmed." : "Cancelled." };
-  }
-
-  try {
-    const res = await fetch("/api/assistant/confirm", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ toolId, approved, reason }),
-    });
-
-    if (!res.ok) {
-      return { mode: "ERROR", response: "Failed to process confirmation." };
-    }
-
-    const data = (await res.json()) as AssistantAPIResponse;
-    const mode = data.state ? (RUNTIME_STATE_TO_ORB_MODE[data.state as JarvisRuntimeState] as OrbMode) : "IDLE";
-
-    return {
-      mode,
-      response: data.message,
-      state: data.state ? (data.state as JarvisRuntimeState) : undefined,
-      pendingConfirmation: data.pendingConfirmation ?? undefined,
-      actionChain: data.actionChain ?? undefined,
-      conversationId: data.conversationId,
-      tool: data.toolsExecuted?.[0]?.toolName as
-        | "getSystemStats"
-        | "toggleMic"
-        | "toggleCamera"
-        | "openUrl"
-        | "launchApp"
-        | undefined,
-    };
-  } catch (error) {
-    void error;
-    return { mode: "ERROR", response: "Failed to process confirmation." };
   }
 }

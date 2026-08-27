@@ -5,7 +5,7 @@
  *  - explicit-intent gate on remember_user_preference
  *  - secret rejection end-to-end (nothing stored, nothing logged)
  *  - audit-log redaction of memory-tool arguments
- *  - confirmation gating + approved/denied forget/clear
+ *  - immediate execution of forget/clear memory tools
  *  - relevant-memory injection into the Groq request (system message placed
  *    before the current user message, no duplicate user messages)
  *  - irrelevant memories are NOT injected
@@ -176,7 +176,7 @@ describe("JARVIS memory pipeline", () => {
     expect(manager.count()).toBe(1);
   });
 
-  test("forget requires confirmation; approved deletes, denied keeps", async () => {
+  test("forget executes immediately and deletes the memory", async () => {
     manager.remember({ key: "theme", value: "dark mode" });
     expect(manager.count()).toBe(1);
 
@@ -189,33 +189,20 @@ describe("JARVIS memory pipeline", () => {
     };
     const pipeline = new JarvisPipeline({ assistant: fake, registry: makeRegistry() });
 
-    const pending = await pipeline.processUserInput("forget my theme preference");
-    expect(pending.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-    expect(pending.pendingConfirmation?.humanReadableAction).toContain("theme");
-    expect(manager.count()).toBe(1);
-
-    const denied = await pipeline.handleConfirmation({
-      toolId: pending.pendingConfirmation!.id,
-      approved: false,
-    });
-    expect(denied.message).toContain("Cancelled");
-    expect(manager.count()).toBe(1);
-
-    const pending2 = await pipeline.processUserInput("forget my theme preference");
-    const approved = await pipeline.handleConfirmation({
-      toolId: pending2.pendingConfirmation!.id,
-      approved: true,
-    });
-    expect(approved.toolsExecuted?.[0]).toMatchObject({
+    const result = await pipeline.processUserInput("forget my theme preference");
+    expect(result.state).toBe(JarvisRuntimeState.IDLE);
+    expect(result.pendingConfirmation).toBeUndefined();
+    expect(result.toolsExecuted?.[0]).toMatchObject({
       toolName: "forget_user_memory",
       success: true,
     });
     expect(manager.count()).toBe(0);
   });
 
-  test("clear requires confirmation; denied keeps everything", async () => {
+  test("clear executes immediately and deletes all memories", async () => {
     manager.remember({ key: "theme", value: "dark mode" });
     manager.remember({ key: "voice", value: "natural" });
+    expect(manager.count()).toBe(2);
 
     const fake: AssistantLike = {
       processMessage: jest.fn(async (): Promise<AssistantProcessResult> => ({
@@ -226,24 +213,10 @@ describe("JARVIS memory pipeline", () => {
     };
     const pipeline = new JarvisPipeline({ assistant: fake, registry: makeRegistry() });
 
-    const pending = await pipeline.processUserInput("forget everything");
-    expect(pending.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-    expect(pending.pendingConfirmation?.humanReadableAction).toBe("Clear all saved memories?");
-
-    const denied = await pipeline.handleConfirmation({
-      toolId: pending.pendingConfirmation!.id,
-      approved: false,
-      reason: "User said: no",
-    });
-    expect(denied.message).toContain("Cancelled");
-    expect(manager.count()).toBe(2);
-
-    const pending2 = await pipeline.processUserInput("forget everything");
-    const approved = await pipeline.handleConfirmation({
-      toolId: pending2.pendingConfirmation!.id,
-      approved: true,
-    });
-    expect(approved.toolsExecuted?.[0]).toMatchObject({
+    const result = await pipeline.processUserInput("forget everything");
+    expect(result.state).toBe(JarvisRuntimeState.IDLE);
+    expect(result.pendingConfirmation).toBeUndefined();
+    expect(result.toolsExecuted?.[0]).toMatchObject({
       toolName: "clear_user_memory",
       success: true,
     });

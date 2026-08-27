@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { callAIAssistant, confirmToolDecision } from "@/lib/aiRouter";
+import { callAIAssistant } from "@/lib/aiRouter";
 import type { AssistantResult } from "@/lib/aiRouter";
-import { HandTracker, type TrackerStatus } from "@/lib/handTracker";
+import { HandTracker } from "@/lib/handTracker";
 import {
   createJarvisStore,
   DEFAULT_JARVIS_STATE,
@@ -14,28 +14,18 @@ import { createOrbScene, type OrbSceneApi } from "@/lib/orbScene";
 import { createTelemetrySnapshot } from "@/lib/systemTelemetry";
 import { createVoiceSession } from "@/lib/voice";
 import type { VoiceSession, VoiceSessionState, VoiceSettings } from "@/lib/voice";
-import { ToolConfirmation } from "@/components/ToolConfirmation";
-import { MemoryIndicator } from "@/components/MemoryIndicator";
+import { loadVoiceSettings } from "@/lib/voice/settings";
 import { ActionStatus } from "@/components/ActionStatus";
 import { AutomationPanel } from "@/components/AutomationPanel";
 import { NotificationCenter } from "@/components/NotificationCenter";
 import { JarvisDashboard } from "@/components/JarvisDashboard";
+import { MemoryIndicator } from "@/components/MemoryIndicator";
+import { JarvisHeader } from "@/components/JarvisHeader";
+import { CommandBar } from "@/components/CommandBar";
+import { GlobalWakeIndicator } from "@/components/GlobalWakeIndicator";
 import { fetchNotifications } from "@/lib/automation/client";
-import type { ActionChainStatus, PendingToolCall } from "@/lib/runtime/types";
+import type { ActionChainStatus } from "@/lib/runtime/types";
 import { JarvisRuntimeState } from "@/lib/runtime/types";
-
-const MODE_LABEL: Record<TrackerStatus["mode"], string> = {
-  idle: "STANDBY",
-  spin: "SPIN",
-  zoom: "ZOOM",
-};
-
-const formatClock = (value: number) => {
-  const totalSeconds = Math.max(0, Math.floor(value));
-  const hours = Math.floor(totalSeconds / 3600) % 24;
-  const minutes = Math.floor(totalSeconds / 60) % 60;
-  return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}`;
-};
 
 const VOICE_STATE_LABEL: Record<VoiceSessionState, string> = {
   idle: "STANDBY",
@@ -44,7 +34,7 @@ const VOICE_STATE_LABEL: Record<VoiceSessionState, string> = {
   transcribing: "TRANSCRIBING...",
   thinking: "THINKING...",
   executing: "EXECUTING...",
-  waiting_for_confirmation: "AWAITING CONFIRMATION",
+  waiting_for_confirmation: "EXECUTING...",
   responding: "RESPONDING...",
   speaking: "SPEAKING",
   error: "VOICE ERROR",
@@ -61,20 +51,14 @@ export default function JarvisOrb() {
   const [error, setError] = useState<string | null>(null);
   const voiceSessionRef = useRef<VoiceSession | null>(null);
   const conversationIdRef = useRef<string>("");
-  const [pendingConfirmation, setPendingConfirmation] = useState<PendingToolCall | null>(null);
   const [actionChain, setActionChain] = useState<ActionChainStatus | null>(null);
-  const [confirmationBusy, setConfirmationBusy] = useState(false);
   const [memoryTick, setMemoryTick] = useState(0);
   const lastNotificationAtRef = useRef<number>(0);
   const lastNotificationSpokenRef = useRef<string>("");
   const [voiceSessionState, setVoiceSessionState] = useState<VoiceSessionState>("idle");
-  const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>({
-    wakeWordEnabled: false,
-    followUpWindow: 15,
-    voiceResponseEnabled: true,
-    pushToTalkEnabled: true,
-  });
+  const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>(loadVoiceSettings);
   const [showVoiceSettings, setShowVoiceSettings] = useState(false);
+  const [globalWakeActive, setGlobalWakeActive] = useState(false);
 
   useEffect(() => {
     const unsubscribe = store.subscribe((next) => setState(next));
@@ -90,14 +74,17 @@ export default function JarvisOrb() {
     }
 
     const interval = window.setInterval(() => {
-      const snapshot = createTelemetrySnapshot();
-      store.setInfo({
-        cpu: snapshot.cpu,
-        memory: snapshot.memory,
-        network: snapshot.network,
-        battery: snapshot.battery,
-        uptime: snapshot.uptime,
-        disk: snapshot.disk,
+      void createTelemetrySnapshot().then((snapshot) => {
+        if (snapshot) {
+          store.setInfo({
+            cpu: snapshot.cpu,
+            memory: snapshot.memory,
+            network: snapshot.network,
+            battery: snapshot.battery,
+            uptime: snapshot.uptime,
+            disk: snapshot.disk,
+          });
+        }
       });
     }, 2200);
 
@@ -137,9 +124,6 @@ export default function JarvisOrb() {
         runtimeState: parsed.state ?? JarvisRuntimeState.IDLE,
       });
       updateMode(parsed.mode);
-      if (parsed.pendingConfirmation) {
-        setPendingConfirmation(parsed.pendingConfirmation);
-      }
       setActionChain(parsed.actionChain ?? null);
       setMemoryTick((tick) => tick + 1);
     },
@@ -147,10 +131,12 @@ export default function JarvisOrb() {
   );
 
   const speakResponse = useCallback(
-    (text: string, onEndMode: OrbMode = "IDLE") => {
+    (text: string) => {
       const session = voiceSessionRef.current;
       if (!session) return;
-      session.handlePipelineResponse({ message: text });
+      // Typed commands and passive notifications may be spoken, but they must
+      // not enter the speech-recognition/follow-up flow.
+      session.speakText(text);
     },
     [],
   );
@@ -159,23 +145,46 @@ export default function JarvisOrb() {
     async (text: string) => {
       const session = voiceSessionRef.current;
       if (!session) return;
-      store.setInfo({ transcript: text });
-      setPendingConfirmation(null);
+
+      // Filter wake phrases — they are control signals, not AI commands
+      const normalized = text.trim().toLowerCase().replace(/[,!?.'"-]/g, "");
+      if (/^(hey|hi|ok)\s+jarvis\s*$/.test(normalized)) {
+        return;
+      }
+      // Strip leading wake phrase from combined input like "hey jarvis what is my cpu"
+      const cleaned = text.trim().replace(/^(hey|hi|ok)\s+jarvis\s*[,.]?\s*/i, "").trim();
+      if (!cleaned) return;
+      const command = cleaned;
+
+      store.setInfo({ transcript: command });
       updateMode("THINKING", "THINKING...");
 
-      const parsed = await callAIAssistant(text, conversationIdRef.current);
+      const parsed = await callAIAssistant(command, conversationIdRef.current);
       if (parsed.conversationId) {
         conversationIdRef.current = parsed.conversationId;
       }
       applyAssistantResult(parsed);
       session.handlePipelineResponse({
         message: parsed.response,
-        pendingConfirmation: parsed.pendingConfirmation
-          ? { toolId: parsed.pendingConfirmation.id, description: parsed.pendingConfirmation.description }
-          : null,
       });
     },
     [applyAssistantResult, store, updateMode],
+  );
+
+  const processTextCommand = useCallback(
+    async (text: string) => {
+      store.setInfo({ transcript: text });
+      updateMode("THINKING", "THINKING...");
+      const parsed = await callAIAssistant(text, conversationIdRef.current);
+      if (parsed.conversationId) {
+        conversationIdRef.current = parsed.conversationId;
+      }
+      applyAssistantResult(parsed);
+      if (parsed.response) {
+        speakResponse(parsed.response);
+      }
+    },
+    [applyAssistantResult, store, updateMode, speakResponse],
   );
 
   useEffect(() => {
@@ -185,11 +194,11 @@ export default function JarvisOrb() {
       onStateChange: (s: VoiceSessionState) => {
         setVoiceSessionState(s);
         if (s === "listening") {
-          updateMode("LISTENING", "LISTENING...");
+          updateMode("LISTENING");
           store.setInfo({ micEnabled: true });
         } else if (s === "thinking") {
-          updateMode("THINKING", "THINKING...");
-        } else if (s === "speaking") {
+          updateMode("THINKING");
+        } else if (s === "responding" || s === "speaking") {
           updateMode("SPEAKING");
         } else if (s === "error") {
           updateMode("ERROR");
@@ -197,7 +206,7 @@ export default function JarvisOrb() {
           store.setInfo({ micEnabled: false });
           updateMode("IDLE");
         } else if (s === "waiting_for_confirmation") {
-          updateMode("SYSTEM", "CONFIRM ACTION?");
+          updateMode("SYSTEM");
         }
       },
       onTranscript: (text: string, isFinal: boolean) => {
@@ -209,31 +218,6 @@ export default function JarvisOrb() {
       onAudioLevel: (level: number) => {
         store.setInfo({ audioLevel: level });
       },
-      onConfirmationRequest: (_toolId: string, description: string) => {
-        store.setInfo({ responseText: description });
-        updateMode("SYSTEM", "CONFIRM ACTION?");
-      },
-      onConfirmationResult: (toolId: string, approved: boolean) => {
-        void (async () => {
-          setConfirmationBusy(true);
-          const parsed = await confirmToolDecision(toolId, approved);
-          setPendingConfirmation(null);
-          setConfirmationBusy(false);
-          if (parsed.conversationId) {
-            conversationIdRef.current = parsed.conversationId;
-          }
-          applyAssistantResult(parsed);
-          const session = voiceSessionRef.current;
-          if (session && parsed.response) {
-            session.handlePipelineResponse({
-              message: parsed.response,
-              pendingConfirmation: parsed.pendingConfirmation
-                ? { toolId: parsed.pendingConfirmation.id, description: parsed.pendingConfirmation.description }
-                : null,
-            });
-          }
-        })();
-      },
       onError: (msg: string) => {
         setError(msg);
         updateMode("ERROR");
@@ -243,7 +227,6 @@ export default function JarvisOrb() {
     });
 
     voiceSessionRef.current = session;
-    setVoiceSettings(session.getSettings());
 
     return () => {
       session.destroy();
@@ -298,7 +281,7 @@ export default function JarvisOrb() {
               : status.mode === "spin"
                 ? "PINCH ACTIVE"
                 : "IDLE",
-          gestureConfidence: status.hands > 0 ? 92 : 0,
+          gestureConfidence: status.hands > 0 ? 100 : 0,
         });
       },
     });
@@ -335,48 +318,12 @@ export default function JarvisOrb() {
 
     if (session.getState() === "listening" || session.getState() === "mic_requested") {
       session.stop();
+    } else if (session.getState() === "error") {
+      void session.retry();
     } else {
       void session.start();
     }
   }, [updateMode]);
-
-  const handleConfirmationApprove = useCallback(
-    (requestId: string) => {
-      setConfirmationBusy(true);
-      void (async () => {
-        const parsed = await confirmToolDecision(requestId, true);
-        setPendingConfirmation(null);
-        setConfirmationBusy(false);
-        if (parsed.conversationId) {
-          conversationIdRef.current = parsed.conversationId;
-        }
-        applyAssistantResult(parsed);
-        if (parsed.response) {
-          speakResponse(parsed.response);
-        }
-      })();
-    },
-    [applyAssistantResult, speakResponse],
-  );
-
-  const handleConfirmationDeny = useCallback(
-    (requestId: string) => {
-      setConfirmationBusy(true);
-      void (async () => {
-        const parsed = await confirmToolDecision(requestId, false);
-        setPendingConfirmation(null);
-        setConfirmationBusy(false);
-        if (parsed.conversationId) {
-          conversationIdRef.current = parsed.conversationId;
-        }
-        applyAssistantResult(parsed);
-        if (parsed.response) {
-          speakResponse(parsed.response);
-        }
-      })();
-    },
-    [applyAssistantResult, speakResponse],
-  );
 
   const updateVoiceSettings = useCallback(
     (partial: Partial<VoiceSettings>) => {
@@ -384,12 +331,16 @@ export default function JarvisOrb() {
       if (!session) return;
       session.updateSettings(partial);
       setVoiceSettings(session.getSettings());
+      if (partial.globalWakeEnabled !== undefined) {
+        setGlobalWakeActive(partial.globalWakeEnabled);
+      }
     },
     [],
   );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement) return;
       switch (e.key) {
         case "+":
         case "=":
@@ -415,27 +366,26 @@ export default function JarvisOrb() {
         case "H":
           store.setInfo({ hudVisible: !state.hudVisible });
           break;
-        case "a":
-        case "A":
-          updateMode("THINKING");
-          break;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [runVoiceInput, state.hudVisible, store, toggleGestures, updateMode]);
+  }, [runVoiceInput, state.hudVisible, store, toggleGestures]);
+
+  const handleGlobalWake = useCallback(() => {
+    const session = voiceSessionRef.current;
+    if (session && session.getState() === "idle") {
+      void session.start();
+    }
+  }, []);
 
   const cameraOn = state.camera === "on";
   const micActive = voiceSessionState === "listening" || voiceSessionState === "transcribing" || voiceSessionState === "speaking";
-  const voiceLabel = VOICE_STATE_LABEL[voiceSessionState] ?? "VOICE OFF";
-  const statusText =
-    state.gesture === "IDLE"
-      ? micActive
-        ? voiceLabel
-        : cameraOn
-          ? "HAND TRACKING ON"
-          : "WAITING FOR INPUT"
-      : state.gesture;
+  const wakeStatus = voiceSettings.globalWakeEnabled
+    ? globalWakeActive
+      ? "listening"
+      : "disconnected"
+    : "disconnected";
 
   return (
     <>
@@ -445,136 +395,177 @@ export default function JarvisOrb() {
       <div className="overlay-grain" />
       <div className="overlay-scanlines" />
 
-      <div className="hud hud-title">J.A.R.V.I.S.</div>
+      <JarvisHeader
+        wakeStatus={wakeStatus as "disconnected" | "listening" | "detected"}
+        systemOnline={state.systemOnline}
+      />
 
-      <div className="hud hud-monitor">
-        <div className="monitor-row"><span>CPU</span><strong>{state.cpu.toFixed(1)}%</strong></div>
-        <div className="monitor-row"><span>MEM</span><strong>{state.memory.toFixed(1)} GB</strong></div>
-        <div className="monitor-row"><span>NET</span><strong>{state.network.toFixed(1)} MB/s</strong></div>
-        <div className="monitor-row"><span>BAT</span><strong>{state.battery}%</strong></div>
-        <div className="monitor-row"><span>TIME</span><strong>{formatClock(state.uptime)}</strong></div>
-      </div>
+      {state.hudVisible && (
+        <div className="quick-stats">
+          <div className="quick-stat">
+            <span className="quick-stat-label">CPU</span>
+            <span className="quick-stat-value">{state.cpu.toFixed(1)}%</span>
+          </div>
+          <div className="quick-stat">
+            <span className="quick-stat-label">MEM</span>
+            <span className="quick-stat-value">{state.memory.toFixed(1)} GB</span>
+          </div>
+          <div className="quick-stat">
+            <span className="quick-stat-label">NET</span>
+            <span className="quick-stat-value">{state.network.toFixed(1)} MB/s</span>
+          </div>
+          <div className="quick-stat">
+            <span className="quick-stat-label">BAT</span>
+            <span className="quick-stat-value">{state.battery}%</span>
+          </div>
+        </div>
+      )}
 
       <div className="hud hud-message">
-        <div className="messenger-label">{state.orbMode}</div>
+        <div className="messenger-label">{VOICE_STATE_LABEL[voiceSessionState] ?? state.orbMode}</div>
         <div className="messenger-line">{state.responseText}</div>
         {state.transcript && state.transcript !== "SYSTEM READY" && (
           <div className="messenger-transcript">&ldquo;{state.transcript}&rdquo;</div>
         )}
       </div>
 
-      <div className="hud hud-hint">
-        <div>
-          <span className="key">DRAG</span> spin&nbsp;&nbsp;
-          <span className="key">SCROLL</span> zoom
-        </div>
-        {cameraOn ? (
-          <div>
-            <span className="key">PINCH</span> select&nbsp;&nbsp;
-            <span className="key">OPEN PALM</span> focus
+      {state.hudVisible && (
+        <div className="system-overview">
+          <div className="system-overview-title">SYSTEM OVERVIEW</div>
+          <div className="system-overview-row">
+            <span className="system-overview-key">Status</span>
+            <span className="system-overview-val">{VOICE_STATE_LABEL[voiceSessionState] ?? "IDLE"}</span>
           </div>
-        ) : (
-          <div>
-            <span className="key">G</span> gestures&nbsp;&nbsp;
-            <span className="key">M</span> mic&nbsp;&nbsp;
-            <span className="key">H</span> HUD
+          <div className="system-overview-row">
+            <span className="system-overview-key">Orb</span>
+            <span className="system-overview-val">{state.orbMode}</span>
           </div>
-        )}
-      </div>
-
-      <div className="hud hud-controls">
-        <div className={`camera-panel${cameraOn ? " visible" : ""}`}>
-          <video ref={videoRef} muted playsInline className="camera-video" />
-          <canvas ref={overlayRef} width={208} height={156} className="camera-overlay" />
-          <div className="camera-status">
-            {statusText} · {state.gestureConfidence > 0 ? `CONF ${state.gestureConfidence}%` : "OFFLINE"}
+          <div className="system-overview-row">
+            <span className="system-overview-key">Camera</span>
+            <span className="system-overview-val">{cameraOn ? "ON" : "OFF"}</span>
+          </div>
+          <div className="system-overview-row">
+            <span className="system-overview-key">Mic</span>
+            <span className="system-overview-val">{micActive ? "ACTIVE" : "OFF"}</span>
+          </div>
+          <div className="system-overview-row">
+            <span className="system-overview-key">AI</span>
+            <span className="system-overview-val">{state.aiReady ? "READY" : "OFFLINE"}</span>
           </div>
         </div>
+      )}
 
-        {error && <div className="hud-error">{error}</div>}
-
-        <ToolConfirmation
-          request={pendingConfirmation}
-          busy={confirmationBusy}
-          onApprove={handleConfirmationApprove}
-          onDeny={handleConfirmationDeny}
-        />
-
-        <ActionStatus chain={actionChain} />
-
-        <div className="hud-row">
-          <button type="button" className="hud-btn" aria-pressed={cameraOn} onClick={toggleGestures} disabled={state.camera === "starting"}>
-            {state.camera === "starting" ? "INITIALIZING…" : cameraOn ? "GESTURES ON" : "GESTURES OFF"}
-          </button>
-          <button type="button" className="hud-btn" onClick={() => runVoiceInput()}>
-            {micActive ? "VOICE ON" : "VOICE OFF"}
-          </button>
-          <button type="button" className="hud-btn" onClick={() => setShowVoiceSettings(!showVoiceSettings)}>
-            ⚙
-          </button>
-        </div>
-
-        {showVoiceSettings && (
-          <div className="hud-row hud-settings-panel">
-            <div className="setting-row">
-              <span>Wake Word</span>
-              <button
-                type="button"
-                className={`hud-btn-toggle ${voiceSettings.wakeWordEnabled ? "on" : "off"}`}
-                onClick={() => updateVoiceSettings({ wakeWordEnabled: !voiceSettings.wakeWordEnabled })}
-              >
-                {voiceSettings.wakeWordEnabled ? "ON" : "OFF"}
-              </button>
+      {state.hudVisible && (
+        <div className="hud hud-controls">
+          <div className={`camera-panel${cameraOn ? " visible" : ""}`}>
+            <video ref={videoRef} muted playsInline className="camera-video" />
+            <canvas ref={overlayRef} width={208} height={156} className="camera-overlay" />
+            <div className="camera-status">
+              {VOICE_STATE_LABEL[voiceSessionState] ?? "STANDBY"}
+              {state.gestureConfidence > 0 ? " HANDS" : ""}
             </div>
-            <div className="setting-row">
-              <span>Voice Response</span>
-              <button
-                type="button"
-                className={`hud-btn-toggle ${voiceSettings.voiceResponseEnabled ? "on" : "off"}`}
-                onClick={() => updateVoiceSettings({ voiceResponseEnabled: !voiceSettings.voiceResponseEnabled })}
-              >
-                {voiceSettings.voiceResponseEnabled ? "ON" : "OFF"}
-              </button>
-            </div>
-            <div className="setting-row">
-              <span>Follow-up ({voiceSettings.followUpWindow}s)</span>
-              <div>
-                {[10, 15, 30].map((v) => (
-                  <button
-                    key={v}
-                    type="button"
-                    className={`hud-btn-toggle ${voiceSettings.followUpWindow === v ? "on" : "off"}`}
-                    onClick={() => updateVoiceSettings({ followUpWindow: v })}
-                  >
-                    {v}s
-                  </button>
-                ))}
+          </div>
+
+          {error && <div className="hud-error">{error}</div>}
+
+          <ActionStatus chain={actionChain} />
+
+          <div className="hud-row">
+            <button type="button" className="hud-btn" aria-label={cameraOn ? "Disable gestures" : "Enable gestures"} aria-pressed={cameraOn} onClick={toggleGestures} disabled={state.camera === "starting"}>
+              {state.camera === "starting" ? "INITIALIZING..." : cameraOn ? "GESTURES ON" : "GESTURES OFF"}
+            </button>
+            <button type="button" className="hud-btn" aria-label={micActive ? "Turn off voice" : "Turn on voice"} onClick={() => runVoiceInput()}>
+              {voiceSessionState === "error" ? "RETRY VOICE" : micActive ? "VOICE ON" : "VOICE OFF"}
+            </button>
+            <button type="button" className="hud-btn" aria-label="Settings" onClick={() => setShowVoiceSettings(!showVoiceSettings)}>
+              SETTINGS
+            </button>
+          </div>
+
+          {showVoiceSettings && (
+            <div className="hud-row hud-settings-panel">
+              <div className="setting-row">
+                <span>Wake Word</span>
+                <button
+                  type="button"
+                  className={`hud-btn-toggle ${voiceSettings.wakeWordEnabled ? "on" : "off"}`}
+                  onClick={() => updateVoiceSettings({ wakeWordEnabled: !voiceSettings.wakeWordEnabled })}
+                >
+                  {voiceSettings.wakeWordEnabled ? "ON" : "OFF"}
+                </button>
               </div>
-            </div>
-            {voiceSettings.wakeWordEnabled && (
-              <div className="hud-note">
-                Browser tab must be focused. Always-on background listening is not available in web browsers.
+              <div className="setting-row">
+                <span>Voice Response</span>
+                <button
+                  type="button"
+                  className={`hud-btn-toggle ${voiceSettings.voiceResponseEnabled ? "on" : "off"}`}
+                  onClick={() => updateVoiceSettings({ voiceResponseEnabled: !voiceSettings.voiceResponseEnabled })}
+                >
+                  {voiceSettings.voiceResponseEnabled ? "ON" : "OFF"}
+                </button>
               </div>
-            )}
-          </div>
-        )}
+              <div className="setting-row">
+                <span>Global Wake</span>
+                <button
+                  type="button"
+                  className={`hud-btn-toggle ${voiceSettings.globalWakeEnabled ? "on" : "off"}`}
+                  onClick={() => updateVoiceSettings({ globalWakeEnabled: !voiceSettings.globalWakeEnabled })}
+                >
+                  {voiceSettings.globalWakeEnabled ? "ON" : "OFF"}
+                </button>
+              </div>
+              {voiceSettings.globalWakeEnabled && (
+                <div className="hud-note">
+                  Run the companion: python companion/jarvis-wake.py
+                </div>
+              )}
+              <div className="setting-row">
+                <span>Follow-up ({voiceSettings.followUpWindow}s)</span>
+                <div>
+                  {[10, 15, 30].map((v) => (
+                    <button
+                      key={v}
+                      type="button"
+                      className={`hud-btn-toggle ${voiceSettings.followUpWindow === v ? "on" : "off"}`}
+                      onClick={() => updateVoiceSettings({ followUpWindow: v })}
+                    >
+                      {v}s
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {voiceSettings.wakeWordEnabled && !voiceSettings.globalWakeEnabled && (
+                <div className="hud-note">
+                  Browser tab must be focused. Enable Global Wake for background listening.
+                </div>
+              )}
+            </div>
+          )}
 
-        <div className="hud-row">
-          <button type="button" className="hud-btn" onClick={() => sceneRef.current?.zoomIn()} aria-label="Zoom in">+</button>
-          <button type="button" className="hud-btn" onClick={() => sceneRef.current?.zoomOut()} aria-label="Zoom out">−</button>
-          <button type="button" className="hud-btn" onClick={() => sceneRef.current?.resetView()}>RESET</button>
+          <div className="hud-row">
+            <MemoryIndicator refreshKey={memoryTick} />
+          </div>
+          <div className="hud-row">
+            <AutomationPanel refreshKey={memoryTick} />
+          </div>
+          <div className="hud-row">
+            <NotificationCenter refreshKey={memoryTick} onSpeak={(text) => speakResponse(text)} />
+            <JarvisDashboard refreshKey={memoryTick} />
+          </div>
+
+          {voiceSettings.globalWakeEnabled && (
+            <GlobalWakeIndicator
+              enabled={voiceSettings.globalWakeEnabled}
+              onWakeDetected={handleGlobalWake}
+            />
+          )}
         </div>
-        <div className="hud-row">
-          <MemoryIndicator refreshKey={memoryTick} />
-        </div>
-        <div className="hud-row">
-          <AutomationPanel refreshKey={memoryTick} />
-        </div>
-        <div className="hud-row">
-          <NotificationCenter refreshKey={memoryTick} onSpeak={(text) => speakResponse(text)} />
-          <JarvisDashboard refreshKey={memoryTick} />
-        </div>
-      </div>
+      )}
+
+      <CommandBar
+        disabled={voiceSessionState === "thinking" || voiceSessionState === "executing"}
+        onSubmit={processTextCommand}
+      />
     </>
   );
 }

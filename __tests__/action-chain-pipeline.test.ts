@@ -1,8 +1,8 @@
 /**
  * JARVIS Action Chain — Pipeline Integration Tests
  * Validates multi-step action chaining end-to-end through the pipeline:
- * safe steps run in order, gated steps pause and resume, denials skip the
- * step and continue, failures surface honestly, and chain status is exposed.
+ * steps run in order and execute immediately (including confirmation-gated
+ * tools), failures surface honestly, and chain status is exposed.
  */
 
 import { JarvisPipeline } from "@/lib/runtime/pipeline";
@@ -98,7 +98,7 @@ describe("JARVIS Action Chain pipeline", () => {
     expect(result.actionChain?.steps.map((s) => s.status)).toEqual(["executed", "executed"]);
   });
 
-  test("a gated step pauses the chain and approval resumes remaining steps", async () => {
+  test("a gated step executes immediately together with remaining steps", async () => {
     const assistant = createFake({
       response: "Launching.",
       toolsUsed: ["launch_application", "echo"],
@@ -106,56 +106,21 @@ describe("JARVIS Action Chain pipeline", () => {
     });
     const pipeline = new JarvisPipeline({ assistant, registry: createRegistry() });
 
-    const first = await pipeline.processUserInput("launch Safari then echo after");
-    expect(first.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-    expect(first.actionChain?.state).toBe("waiting_for_confirmation");
-    expect(first.actionChain?.steps.map((s) => s.toolName)).toEqual([
+    const result = await pipeline.processUserInput("launch Safari then echo after");
+
+    expect(result.state).toBe(JarvisRuntimeState.IDLE);
+    expect(result.pendingConfirmation).toBeUndefined();
+    expect(result.toolsExecuted?.map((t) => t.toolName)).toEqual([
       "launch_application",
       "echo",
     ]);
-    expect(first.toolsExecuted).toBeUndefined();
-
-    const second = await pipeline.handleConfirmation({
-      toolId: first.pendingConfirmation!.id,
-      approved: true,
-    });
-
-    expect(second.state).toBe(JarvisRuntimeState.IDLE);
-    expect(second.toolsExecuted?.map((t) => t.toolName)).toEqual([
-      "launch_application",
-      "echo",
-    ]);
-    expect(second.toolsExecuted?.[0].result).toEqual({ launched: "Safari" });
-    expect(second.actionChain?.state).toBe("completed");
-    expect(second.actionChain?.steps.map((s) => s.status)).toEqual(["executed", "executed"]);
+    expect(result.toolsExecuted?.[0].result).toEqual({ launched: "Safari" });
+    expect(result.toolsExecuted?.[1].result).toEqual({ echoed: "after" });
+    expect(result.actionChain?.state).toBe("completed");
+    expect(result.actionChain?.steps.map((s) => s.status)).toEqual(["executed", "executed"]);
   });
 
-  test("denying a gated step skips it and continues with remaining steps", async () => {
-    const assistant = createFake({
-      response: "Launching.",
-      toolsUsed: ["launch_application", "echo"],
-      toolCalls: [launchCall("Safari"), echoCall("after")],
-    });
-    const pipeline = new JarvisPipeline({ assistant, registry: createRegistry() });
-
-    const first = await pipeline.processUserInput("launch Safari then echo after");
-    expect(first.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-
-    const second = await pipeline.handleConfirmation({
-      toolId: first.pendingConfirmation!.id,
-      approved: false,
-      reason: "Not now",
-    });
-
-    expect(second.state).toBe(JarvisRuntimeState.IDLE);
-    expect(second.message).toContain("Cancelled");
-    expect(second.toolsExecuted?.map((t) => t.toolName)).toEqual(["echo"]);
-    expect(second.actionChain?.state).toBe("partial_success");
-    expect(second.actionChain?.steps.map((s) => s.status)).toEqual(["denied", "executed"]);
-    expect(pipeline.getPendingConfirmations()).toHaveLength(0);
-  });
-
-  test("multiple gated steps pause independently and each requires its own decision", async () => {
+  test("multiple gated steps execute immediately in order without pausing", async () => {
     const assistant = createFake({
       response: "Launching.",
       toolsUsed: ["launch_application", "launch_application"],
@@ -163,27 +128,16 @@ describe("JARVIS Action Chain pipeline", () => {
     });
     const pipeline = new JarvisPipeline({ assistant, registry: createRegistry() });
 
-    const first = await pipeline.processUserInput("launch Safari and Mail");
-    expect(first.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
+    const result = await pipeline.processUserInput("launch Safari and Mail");
 
-    const second = await pipeline.handleConfirmation({
-      toolId: first.pendingConfirmation!.id,
-      approved: true,
-    });
-    expect(second.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-    expect(second.pendingConfirmation?.name).toBe("launch_application");
-    expect(second.toolsExecuted).toBeUndefined();
-
-    const third = await pipeline.handleConfirmation({
-      toolId: second.pendingConfirmation!.id,
-      approved: true,
-    });
-    expect(third.state).toBe(JarvisRuntimeState.IDLE);
-    expect(third.toolsExecuted?.map((t) => t.result)).toEqual([
+    expect(result.state).toBe(JarvisRuntimeState.IDLE);
+    expect(result.pendingConfirmation).toBeUndefined();
+    expect(result.toolsExecuted?.map((t) => t.result)).toEqual([
       { launched: "Safari" },
       { launched: "Mail" },
     ]);
-    expect(third.actionChain?.state).toBe("completed");
+    expect(result.actionChain?.state).toBe("completed");
+    expect(result.actionChain?.steps.map((s) => s.status)).toEqual(["executed", "executed"]);
   });
 
   test("a failing step is surfaced honestly and the chain reports partial success", async () => {

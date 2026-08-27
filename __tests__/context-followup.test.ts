@@ -1,9 +1,9 @@
 /**
  * P4 — Follow-up Context with Action Chains.
- * Verifies that after an action chain runs (including one resumed after a
- * confirmation), the conversation history forwarded to the provider includes
- * the tool results and prior assistant messages, so follow-up questions have
- * full context — without duplicating the current user message.
+ * Verifies that after an action chain runs, the conversation history forwarded
+ * to the provider includes the tool results and prior assistant messages, so
+ * follow-up questions have full context — without duplicating the current user
+ * message.
  * All AI interactions use a mocked Groq HTTP layer — no real network calls.
  */
 
@@ -74,7 +74,7 @@ describe("P4 follow-up context with action chains", () => {
     delete (global as Record<string, unknown>).fetch;
   });
 
-  test("tool results and prior assistant messages are forwarded after a resumed chain", async () => {
+  test("tool results and prior assistant messages are forwarded after an executed chain", async () => {
     const fetch = jest.fn()
       .mockResolvedValueOnce({
         ok: true, status: 200, statusText: "OK",
@@ -102,17 +102,17 @@ describe("P4 follow-up context with action chains", () => {
     const pipeline = new JarvisPipeline({ assistant, registry });
 
     const first = await pipeline.processUserInput("open safari");
-    expect(first.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-
-    const resumed = await pipeline.handleConfirmation({
-      toolId: first.pendingConfirmation!.id,
-      approved: true,
+    expect(first.state).toBe(JarvisRuntimeState.IDLE);
+    expect(first.pendingConfirmation).toBeUndefined();
+    expect(first.toolsExecuted?.[0]).toMatchObject({
+      toolName: "launch_application",
+      success: true,
     });
-    expect(resumed.state).toBe(JarvisRuntimeState.IDLE);
-    expect(resumed.message).toBe("Safari is opening.");
+    expect(first.toolsExecuted?.[0].result).toEqual({ launched: "Safari" });
+    expect(first.message).toBe("Safari is opening.");
 
     const followUp = await pipeline.processUserInput("is that high?", {
-      conversationId: resumed.conversationId,
+      conversationId: first.conversationId,
     });
     expect(followUp.state).toBe(JarvisRuntimeState.IDLE);
 

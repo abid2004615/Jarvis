@@ -316,7 +316,7 @@ describe("P3.2 Permissions", () => {
     expect(result.result).toBeDefined();
   });
 
-  test("confirmation tools produce a pendingConfirmation through the pipeline", async () => {
+  test("confirmation-risk tools execute immediately through the pipeline", async () => {
     resetConversationContextManager();
     const executor = jest.fn(async () => ({ ok: true }));
     const registry = new ToolRegistry();
@@ -347,10 +347,14 @@ describe("P3.2 Permissions", () => {
     const pipeline = new JarvisPipeline({ assistant: fakeAssistant, registry });
     const result = await pipeline.processUserInput("set volume to 40");
 
-    expect(result.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-    expect(result.pendingConfirmation?.name).toBe("set_volume");
-    expect(result.pendingConfirmation?.humanReadableAction).toBe("Set system volume to 40%?");
-    expect(executor).not.toHaveBeenCalled();
+    expect(result.state).toBe(JarvisRuntimeState.IDLE);
+    expect(result.pendingConfirmation).toBeUndefined();
+    expect(executor).toHaveBeenCalledTimes(1);
+    expect(executor).toHaveBeenCalledWith({ level: 40 });
+    expect(result.toolsExecuted?.[0]).toMatchObject({
+      toolName: "set_volume",
+      success: true,
+    });
   });
 
   test("restricted tools are rejected by the permission manager", async () => {
@@ -360,87 +364,6 @@ describe("P3.2 Permissions", () => {
     const result = await manager.canExecute("set_volume", { level: 40 });
     expect(result.allowed).toBe(false);
     expect(result.reason).toContain("restricted");
-  });
-
-  test("DENY produces no side effect", async () => {
-    resetConversationContextManager();
-    const executor = jest.fn(async () => ({ ok: true }));
-    const registry = new ToolRegistry();
-    registry.register({
-      name: "set_volume",
-      description: "Change the system volume",
-      inputSchema: {
-        type: "object",
-        properties: { level: { type: "integer" } },
-        required: [],
-        additionalProperties: false,
-      },
-      riskLevel: "confirmation",
-      requiresUserConfirmation: true,
-      execute: executor,
-    });
-
-    const fakeAssistant: AssistantLike = {
-      async processMessage(_input: string, _context: AssistantContext): Promise<AssistantProcessResult> {
-        return {
-          response: "",
-          toolsUsed: ["set_volume"],
-          toolCalls: [{ id: "c1", name: "set_volume", arguments: { level: 40 } }],
-        };
-      },
-    };
-
-    const pipeline = new JarvisPipeline({ assistant: fakeAssistant, registry });
-    const pending = await pipeline.processUserInput("set volume to 40");
-    const result = await pipeline.handleConfirmation({
-      toolId: pending.pendingConfirmation!.id,
-      approved: false,
-      reason: "Not now",
-    });
-
-    expect(result.message).toContain("Cancelled");
-    expect(executor).not.toHaveBeenCalled();
-    expect(pipeline.getPendingConfirmations()).toHaveLength(0);
-  });
-
-  test("ALLOW executes through the server path", async () => {
-    resetConversationContextManager();
-    const executor = jest.fn(async () => ({ ok: true }));
-    const registry = new ToolRegistry();
-    registry.register({
-      name: "set_volume",
-      description: "Change the system volume",
-      inputSchema: {
-        type: "object",
-        properties: { level: { type: "integer" } },
-        required: [],
-        additionalProperties: false,
-      },
-      riskLevel: "confirmation",
-      requiresUserConfirmation: true,
-      execute: executor,
-    });
-
-    const fakeAssistant: AssistantLike = {
-      async processMessage(_input: string, _context: AssistantContext): Promise<AssistantProcessResult> {
-        return {
-          response: "",
-          toolsUsed: ["set_volume"],
-          toolCalls: [{ id: "c1", name: "set_volume", arguments: { level: 40 } }],
-        };
-      },
-    };
-
-    const pipeline = new JarvisPipeline({ assistant: fakeAssistant, registry });
-    const pending = await pipeline.processUserInput("set volume to 40");
-    const result = await pipeline.handleConfirmation({
-      toolId: pending.pendingConfirmation!.id,
-      approved: true,
-    });
-
-    expect(result.state).toBe(JarvisRuntimeState.IDLE);
-    expect(executor).toHaveBeenCalledTimes(1);
-    expect(executor).toHaveBeenCalledWith({ level: 40 });
   });
 });
 

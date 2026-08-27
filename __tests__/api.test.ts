@@ -3,7 +3,7 @@
  * Validates the pure request-validation logic shared by the API routes.
  */
 
-import { validateAssistantRequest, validateConfirmationRequest } from "@/lib/ai/validation";
+import { validateAssistantRequest } from "@/lib/ai/validation";
 
 describe("Assistant API Endpoint", () => {
   describe("Request Validation", () => {
@@ -52,31 +52,6 @@ describe("Assistant API Endpoint", () => {
       const result = validateAssistantRequest({ message: "hello" });
       expect(result.valid).toBe(true);
       expect(result.data?.conversationId).toBeUndefined();
-    });
-  });
-
-  describe("Confirmation Validation", () => {
-    test("should reject missing toolId", () => {
-      const result = validateConfirmationRequest({ approved: true });
-      expect(result.valid).toBe(false);
-    });
-
-    test("should reject missing approved", () => {
-      const result = validateConfirmationRequest({ toolId: "tool-1" });
-      expect(result.valid).toBe(false);
-    });
-
-    test("should reject non-boolean approved", () => {
-      const result = validateConfirmationRequest({ toolId: "tool-1", approved: "yes" });
-      expect(result.valid).toBe(false);
-    });
-
-    test("should accept a valid decision", () => {
-      const result = validateConfirmationRequest({ toolId: "tool-1", approved: true, reason: "ok" });
-      expect(result.valid).toBe(true);
-      expect(result.data?.toolId).toBe("tool-1");
-      expect(result.data?.approved).toBe(true);
-      expect(result.data?.reason).toBe("ok");
     });
   });
 

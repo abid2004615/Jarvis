@@ -43,37 +43,3 @@ export function validateAssistantRequest(body: unknown): ValidationResult {
     },
   };
 }
-
-export interface ConfirmationRequestValidationResult {
-  valid: boolean;
-  error?: string;
-  data?: { toolId: string; approved: boolean; reason?: string };
-}
-
-/**
- * Validate a confirmation decision request body.
- */
-export function validateConfirmationRequest(body: unknown): ConfirmationRequestValidationResult {
-  if (typeof body !== "object" || body === null) {
-    return { valid: false, error: "Request body must be JSON" };
-  }
-
-  const req = body as Record<string, unknown>;
-
-  if (typeof req.toolId !== "string" || !req.toolId.trim()) {
-    return { valid: false, error: "toolId is required and must be a non-empty string" };
-  }
-
-  if (typeof req.approved !== "boolean") {
-    return { valid: false, error: "approved is required and must be a boolean" };
-  }
-
-  return {
-    valid: true,
-    data: {
-      toolId: req.toolId.trim(),
-      approved: req.approved,
-      reason: typeof req.reason === "string" && req.reason.trim() ? req.reason.slice(0, 500) : undefined,
-    },
-  };
-}

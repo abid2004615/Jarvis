@@ -8,6 +8,10 @@
 # production
 /build
 
+# electron
+/electron/dist/
+/release/
+
 # misc
 .DS_Store
 *.pem
@@ -27,3 +31,5 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+__pycache__/
+*.pyc

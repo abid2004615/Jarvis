@@ -18,7 +18,6 @@ import {
   type JarvisResponse,
   type PendingToolCall,
   type ToolExecutionResult,
-  type ConfirmationDecision,
 } from "@/lib/runtime/types";
 import {
   getToolRegistry,
@@ -30,7 +29,6 @@ import type { ToolRegistry } from "@/lib/tools/types";
 import { ActionChain } from "@/lib/runtime/action-chain";
 import { logToolExecution } from "@/lib/audit/logger";
 import { getFallbackResponse } from "@/lib/ai/fallback";
-import { classifyConfirmationIntent } from "@/lib/runtime/confirmation-intent";
 import { getMemoryManager } from "@/lib/memory/manager";
 import { detectMemoryIntent } from "@/lib/memory/intent";
 import { buildMemoryContext, insertMemorySystemMessage } from "@/lib/memory/context";
@@ -47,6 +45,12 @@ import { registerRoutineTools } from "@/lib/routines/register";
 import { getRoutineManager } from "@/lib/routines/manager";
 import type { RoutineStep } from "@/lib/routines/types";
 import { registerBriefingTools } from "@/lib/briefing/register";
+import { registerGoalTools } from "@/lib/goals/register";
+import { wireGoalsToPipeline } from "@/lib/goals/wiring";
+import { registerPersonalizationTools } from "@/lib/personalization/register";
+import { wirePersonalizationToPipeline, getPersonalizationContextForQuery, collectPipelineSignal } from "@/lib/personalization/wiring";
+import { buildPersonalizationContext } from "@/lib/personalization/context";
+import { getPersonalizationManager } from "@/lib/personalization/manager";
 
 /**
  * Tools whose arguments may contain personal information. Their arguments are
@@ -59,6 +63,15 @@ const MEMORY_TOOL_NAMES = new Set([
   "list_user_memories",
   "forget_user_memory",
   "clear_user_memory",
+  "get_user_preferences",
+  "set_user_preference",
+  "update_user_preference",
+  "disable_user_preference",
+  "delete_user_preference",
+  "get_usage_patterns",
+  "get_recommendations",
+  "dismiss_recommendation",
+  "accept_recommendation",
 ]);
 
 /**
@@ -84,7 +97,6 @@ export interface PipelineConstructorOptions {
   assistant?: AssistantLike | null;
   registry?: ToolRegistry | null;
   contextManager?: import("@/lib/runtime/context").ConversationContextManager | null;
-  enableConfirmation?: boolean;
 }
 
 /**
@@ -101,15 +113,9 @@ export interface AssistantLike {
 export class JarvisPipeline {
   private currentState: JarvisRuntimeState = JarvisRuntimeState.IDLE;
   private online = true;
-  private enableConfirmation: boolean;
   private assistantOverride: AssistantLike | null = null;
   private registryOverride: ToolRegistry | null = null;
   private contextManagerOverride: import("@/lib/runtime/context").ConversationContextManager | null = null;
-  private pendingConfirmation: Map<string, PendingToolCall> = new Map();
-  private pendingMeta: Map<
-    string,
-    { conversationId: string; userInput: string; chainId?: string; automationId?: string }
-  > = new Map();
   private activeChains: Map<string, ActionChain> = new Map();
   private listeners: Set<(state: JarvisRuntimeState) => void> = new Set();
 
@@ -117,7 +123,6 @@ export class JarvisPipeline {
     this.assistantOverride = options.assistant ?? null;
     this.registryOverride = options.registry ?? null;
     this.contextManagerOverride = options.contextManager ?? null;
-    this.enableConfirmation = options.enableConfirmation ?? true;
     // Automation management tools live in the shared registry. Registered on
     // construction (idempotent) so conversation-driven automation works.
     registerAutomationTools();
@@ -127,6 +132,11 @@ export class JarvisPipeline {
     registerReminderTools();
     registerRoutineTools();
     registerBriefingTools();
+    // Goal-oriented workflows share the same registry and pipeline.
+    registerGoalTools();
+    // Personalization tools share the same registry and pipeline.
+    registerPersonalizationTools();
+    wirePersonalizationToPipeline();
     // Reminder firing runs on the SINGLE existing scheduler tick (no second
     // loop). Idempotent; wired at construction so fresh servers fire reminders.
     wireRemindersToScheduler();
@@ -138,6 +148,9 @@ export class JarvisPipeline {
     // Wire the routine manager's runner to THIS pipeline so routine steps flow
     // through the same ActionChain/confirmation path as normal conversation.
     getRoutineManager().setRunner((steps, meta) => this.runRoutineSteps(steps, meta));
+    // Wire the goal manager's step runner to THIS pipeline so goal steps flow
+    // through the same ActionChain/confirmation path as normal conversation.
+    wireGoalsToPipeline((step, goal, options) => this.runGoalStep(step, goal, options));
   }
 
   /**
@@ -235,14 +248,6 @@ export class JarvisPipeline {
         return this.createErrorResponse(conversationId, "Input exceeds maximum length", JarvisRuntimeState.IDLE, startTime);
       }
 
-      // Natural-language confirmation: if this conversation has a pending tool
-      // confirmation and the user answered it with a short approve/deny phrase,
-      // resolve it server-side instead of treating it as new input.
-      const intentDecision = this.resolvePendingConfirmationIntent(conversationId, trimmedInput);
-      if (intentDecision) {
-        return this.handleConfirmation(intentDecision);
-      }
-
       const contextManager = this.getContextManager();
       contextManager.getConversation(conversationId);
       contextManager.addMessage(conversationId, "user", trimmedInput);
@@ -262,20 +267,32 @@ export class JarvisPipeline {
         const memoryText = buildMemoryContext(
           getMemoryManager().recall(trimmedInput, 6),
         );
-        const aiMessages = memoryText
-          ? insertMemorySystemMessage(messages, memoryText)
+        // Inject relevant personalization context (preferences + patterns).
+        const personalizationText = getPersonalizationContextForQuery(trimmedInput);
+        // Combine memory and personalization into a single system message.
+        const combinedContext = [memoryText, personalizationText].filter(Boolean).join("\n\n");
+        const aiMessages = combinedContext
+          ? insertMemorySystemMessage(messages, combinedContext)
           : messages;
 
+        if (process.env.NODE_ENV !== "production") {
+          console.log(`[AI] pipeline: input="${trimmedInput.substring(0, 80)}" conversationId=${conversationId.substring(0, 20)} messages=${aiMessages.length}`);
+        }
         aiResult = await assistant.processMessage(trimmedInput, {
           conversationId,
           messages: aiMessages,
           systemPrompt: options.systemPrompt,
         });
+        if (process.env.NODE_ENV !== "production") {
+          console.log(`[AI] pipeline result: response=${aiResult.response?.substring(0, 80) ?? "empty"} toolsUsed=${aiResult.toolsUsed.length} toolCalls=${aiResult.toolCalls?.length ?? 0}`);
+        }
       } catch (error) {
         // Log a sanitized provider error so failures are not silently swallowed
         // into the fallback; safeProviderErrorMessage never exposes credentials.
         const rawError = error instanceof Error ? error.message : String(error);
-        console.error(`[AI] request failed: ${rawError}`);
+        if (process.env.NODE_ENV !== "production") {
+          console.error(`[AI] request failed: ${rawError}`);
+        }
         // Rate limiting gets an honest, natural explanation instead of being
         // hidden behind the pattern-match fallback.
         if (/rate limit|429/i.test(rawError)) {
@@ -367,133 +384,11 @@ export class JarvisPipeline {
   }
 
   /**
-   * Build a pending confirmation for a tool call
-   */
-  private createPendingToolCall(call: ToolCall): PendingToolCall {
-    const tool = this.getRegistry().getTool(call.name);
-    const safeArgs = sanitizeArguments(call.arguments ?? {});
-    return {
-      id: `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      name: call.name,
-      description: tool?.description ?? call.name,
-      humanReadableAction: describeToolAction(call.name, tool?.description ?? call.name, safeArgs),
-      arguments: safeArgs,
-      riskLevel: tool?.riskLevel ?? "confirmation",
-      requiresUserConfirmation: tool?.requiresUserConfirmation ?? true,
-    };
-  }
-
-  /**
-   * Handle a confirmation decision for a pending tool.
-   *
-   * When the pending tool belongs to a paused action chain, the decision
-   * resumes that chain (approve runs the step, deny marks it denied and both
-   * continue with the remaining steps). Otherwise this is a standalone
-   * single-tool confirmation, executed as before.
-   */
-  async handleConfirmation(decision: ConfirmationDecision): Promise<JarvisResponse> {
-    const pending = this.pendingConfirmation.get(decision.toolId);
-    if (!pending) {
-      return this.createErrorResponse(
-        `jarvis-${Date.now()}`,
-        "Confirmation not found",
-        JarvisRuntimeState.ERROR,
-        Date.now(),
-      );
-    }
-
-    const meta = this.pendingMeta.get(decision.toolId);
-    if (meta?.chainId) {
-      const chain = this.activeChains.get(meta.chainId);
-      if (chain) {
-        return this.handleChainConfirmation(chain, meta, decision);
-      }
-    }
-
-    this.pendingConfirmation.delete(decision.toolId);
-    this.pendingMeta.delete(decision.toolId);
-    const conversationId = meta?.conversationId ?? `jarvis-${Date.now()}`;
-    const contextManager = this.getContextManager();
-
-    if (!decision.approved) {
-      const message = `Cancelled execution of ${pending.name}.`;
-      contextManager.addMessage(conversationId, "assistant", message);
-      logToolExecution(
-        pending.name,
-        pending.riskLevel,
-        pending.arguments,
-        { allowed: false, reason: decision.reason ?? "User denied" },
-        { attempted: false, success: false, duration: 0 },
-      );
-      if (meta?.automationId) {
-        getNotificationBus().push({
-          title: `Automation cancelled: ${pending.name}`,
-          body: message,
-          automationId: meta.automationId,
-        });
-      }
-      this.setState(JarvisRuntimeState.IDLE);
-      return {
-        conversationId,
-        userInput: meta?.userInput ?? `Confirmation denied for ${pending.name}`,
-        state: JarvisRuntimeState.IDLE,
-        message,
-        timestamp: Date.now(),
-      };
-    }
-
-    // State: WAITING_FOR_CONFIRMATION → EXECUTING
-    this.setState(JarvisRuntimeState.EXECUTING);
-    const result = await this.executeTool(pending.name, pending.arguments, Date.now(), true);
-
-    // State: EXECUTING → RESPONDING
-    this.setState(JarvisRuntimeState.RESPONDING);
-    const message = result.success
-      ? `${pending.name} executed successfully`
-      : `${pending.name} failed`;
-
-    // A confirmed tool that came from a scheduled/conditional automation
-    // records its run with the automation manager (advances nextRunAt, applies
-    // failure backoff) and notifies. Do NOT create a scheduler bypass — this is
-    // the exact same confirmation path used by normal conversation.
-    if (meta?.automationId) {
-      if (result.success) {
-        getAutomationManager().recordRun(meta.automationId, "success");
-      } else {
-        getAutomationManager().recordRun(meta.automationId, "failed");
-      }
-      getNotificationBus().push({
-        title: `Automation: ${pending.name}`,
-        body: message,
-        automationId: meta.automationId,
-      });
-    }
-
-    contextManager.addMessage(conversationId, "assistant", message);
-
-    const response: JarvisResponse = {
-      conversationId,
-      userInput: meta?.userInput ?? pending.name,
-      state: JarvisRuntimeState.IDLE,
-      message,
-      toolsExecuted: [result],
-      timestamp: Date.now(),
-    };
-
-    // State: RESPONDING → IDLE
-    this.setState(JarvisRuntimeState.IDLE);
-    return response;
-  }
-
-  /**
    * Run an action chain step by step.
    *
-   * Safe steps run immediately (in order). Confirmation-gated steps pause the
-   * chain, register a pending confirmation, and hand control back with a
-   * response carrying both the pendingConfirmation and the chain status.
-   * Invalid steps are recorded as failures without executing. Returns the
-   * final JarvisResponse — either a WAITING_FOR_CONFIRMATION pause or a
-   * completed turn with executed results and a synthesized/derived message.
+   * Steps run immediately in order. Invalid steps are recorded as failures
+   * without executing. Returns the final JarvisResponse with executed results
+   * and a synthesized/derived message.
    */
   private async runActionChain(
     chain: ActionChain,
@@ -525,29 +420,6 @@ export class JarvisPipeline {
         continue;
       }
 
-      if (this.enableConfirmation && step.requiresConfirmation) {
-        // State: EXECUTING → WAITING_FOR_CONFIRMATION
-        chain.state = "waiting_for_confirmation";
-        const pending = this.createPendingToolCall(step.toolCall);
-        step.pendingToolId = pending.id;
-        this.pendingConfirmation.set(pending.id, pending);
-        this.pendingMeta.set(pending.id, {
-          conversationId,
-          userInput,
-          chainId: chain.id,
-        });
-        this.setState(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-        return {
-          conversationId,
-          userInput,
-          state: JarvisRuntimeState.WAITING_FOR_CONFIRMATION,
-          message: `Requesting confirmation for ${step.toolName}`,
-          pendingConfirmation: pending,
-          actionChain: chain.toStatus(),
-          timestamp: Date.now(),
-        };
-      }
-
       // Explicit-intent gate for persistent memory: remember_user_preference
       // only runs when the user explicitly asked JARVIS to remember something.
       if (step.toolName === "remember_user_preference") {
@@ -575,10 +447,46 @@ export class JarvisPipeline {
         }
       }
 
+      // Explicit-intent gate for personalization: set_user_preference only runs
+      // when the user explicitly asked to set/save a preference.
+      if (step.toolName === "set_user_preference") {
+        const hasExplicitIntent = detectMemoryIntent(userInput) === "remember"
+          || /\b(prefer|preference|always|never|set|save|use)\b/i.test(userInput);
+        if (!hasExplicitIntent) {
+          step.status = "failed";
+          step.error = "explicit_preference_intent_required";
+          step.result = {
+            toolName: step.toolName,
+            success: false,
+            result: null,
+            error: "explicit_preference_intent_required",
+            duration: Date.now() - startTime,
+          };
+          contextManager.addToolResults(conversationId, [
+            {
+              toolCallId: step.toolCall.id,
+              success: false,
+              output: null,
+              error: "explicit_preference_intent_required",
+            } satisfies ToolResult,
+          ]);
+          chain.advance();
+          continue;
+        }
+      }
+
       // Safe step: execute now.
-      const result = await this.executeTool(step.toolName, step.toolCall.arguments, startTime, false);
+      const result = await this.executeTool(step.toolName, step.toolCall.arguments, startTime, true);
       step.result = result;
       step.status = result.success ? "executed" : "failed";
+
+      // Collect learning signals for personalization (only on success).
+      if (result.success) {
+        collectPipelineSignal(
+          "confirmation_approved" as any,
+          step.toolName,
+        );
+      }
 
       contextManager.addToolResults(conversationId, [
         {
@@ -628,82 +536,42 @@ export class JarvisPipeline {
   }
 
   /**
-   * Resolve one confirmation decision for a paused action chain step, then
-   * continue executing the remaining steps.
+   * Run a single goal step through the SAME ActionChain path as normal
+   * conversation. Confirmation-gated steps pause into the standard pending
+   * confirmation flow; safe steps execute immediately. There is deliberately
+   * no goal-specific execution bypass.
    */
-  private async handleChainConfirmation(
-    chain: ActionChain,
-    meta: { conversationId: string; userInput: string; chainId?: string },
-    decision: ConfirmationDecision,
+  async runGoalStep(
+    step: { toolId?: string; arguments?: Record<string, unknown>; description: string; id: string },
+    goal: { id: string; title: string },
+    options: { conversationId?: string; userInput?: string } = {},
   ): Promise<JarvisResponse> {
-    const { conversationId, userInput } = meta;
-    const contextManager = this.getContextManager();
-    this.pendingConfirmation.delete(decision.toolId);
-    this.pendingMeta.delete(decision.toolId);
-
-    const stepIndex = chain.getStepIndexByPendingToolId(decision.toolId);
-    const step = stepIndex >= 0 ? chain.steps[stepIndex] : null;
-    if (!step) {
-      this.setState(JarvisRuntimeState.IDLE);
-      return this.createErrorResponse(
-        conversationId,
-        "Confirmation not found",
-        JarvisRuntimeState.ERROR,
-        Date.now(),
-      );
-    }
-
-    if (!decision.approved) {
-      // User denied this step: record it, log it, and continue the chain.
-      step.status = "denied";
-      const deniedMessage = `Cancelled execution of ${step.toolName}.`;
-      contextManager.addMessage(conversationId, "assistant", deniedMessage);
-      logToolExecution(
-        step.toolName,
-        step.riskLevel,
-        sanitizeArguments(step.toolCall.arguments ?? {}),
-        { allowed: false, reason: decision.reason ?? "User denied" },
-        { attempted: false, success: false, duration: 0 },
-      );
-      chain.advance();
-    } else {
-      // User approved this step: execute it now.
-      this.setState(JarvisRuntimeState.EXECUTING);
-      const result = await this.executeTool(step.toolName, step.toolCall.arguments, Date.now(), true);
-      step.result = result;
-      step.status = result.success ? "executed" : "failed";
-      contextManager.addToolResults(conversationId, [
-        {
-          toolCallId: step.toolCall.id,
-          success: result.success,
-          output: result.result,
-          error: result.error,
-        } satisfies ToolResult,
-      ]);
-      chain.advance();
-    }
-
-    if (chain.hasRemaining()) {
-      // Continue with the remaining steps.
-      const synthetic: AssistantProcessResult = {
-        response: "",
-        toolsUsed: [],
-        toolCalls: [],
+    if (!step.toolId) {
+      return {
+        conversationId: options.conversationId ?? `goal-${goal.id}`,
+        userInput: options.userInput ?? `Goal step: ${step.description}`,
+        state: JarvisRuntimeState.IDLE,
+        message: `Step '${step.id}' has no tool to execute`,
+        timestamp: Date.now(),
       };
-      return this.runActionChain(
-        chain,
-        { conversationId, userInput },
-        undefined,
-        synthetic,
-        Date.now(),
-      );
     }
 
-    return this.finalizeActionChain(
+    const conversationId = options.conversationId ?? `goal-${goal.id}`;
+    const userInput = options.userInput ?? `Goal "${goal.title}" step: ${step.description}`;
+
+    const toolCalls: ToolCall[] = [{
+      id: `goal-${goal.id}-${step.id}-${Date.now().toString(36)}`,
+      name: step.toolId,
+      arguments: step.arguments ?? {},
+    }];
+
+    const chain = new ActionChain(toolCalls, this.getRegistry());
+    this.activeChains.set(chain.id, chain);
+    return this.runActionChain(
       chain,
       { conversationId, userInput },
       undefined,
-      { response: "", toolsUsed: [], toolCalls: [] },
+      { response: "", toolsUsed: [], toolCalls },
       Date.now(),
     );
   }
@@ -746,9 +614,19 @@ export class JarvisPipeline {
       deniedNames.length === 0 &&
       failedSteps.length === 0
     ) {
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[AI] synthesis turn: toolCalls=${aiResult.toolCalls?.length ?? 0} toolsExecuted=${toolsToExecute.length}`);
+      }
       const synthesized = await this.synthesizeToolResponse(conversationId, systemPrompt, aiResult);
       if (synthesized) {
+        if (process.env.NODE_ENV !== "production") {
+          console.log(`[AI] synthesis result: response=${synthesized.response?.substring(0, 80) ?? "empty"}`);
+        }
         finalAi = synthesized;
+      } else {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn(`[AI] synthesis failed, using derived summary`);
+        }
       }
     }
 
@@ -774,25 +652,6 @@ export class JarvisPipeline {
     this.setState(JarvisRuntimeState.RESPONDING);
 
     const executed = toolsToExecute.length > 0 ? toolsToExecute : undefined;
-
-    // A safe step may have triggered a nested gated wait (e.g. an automation's
-    // run_automation_now action that requires confirmation). Surface that
-    // pending confirmation instead of dropping it — approval still goes
-    // through the standard confirmation path, so there is no bypass.
-    const nestedPending = this.latestPendingConfirmation();
-    if (nestedPending) {
-      this.setState(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-      return {
-        conversationId,
-        userInput,
-        state: JarvisRuntimeState.WAITING_FOR_CONFIRMATION,
-        message,
-        pendingConfirmation: nestedPending,
-        toolsExecuted: executed,
-        actionChain: chain.toStatus(),
-        timestamp: Date.now(),
-      };
-    }
 
     const response: JarvisResponse = {
       conversationId,
@@ -857,35 +716,6 @@ export class JarvisPipeline {
   }
 
   /**
-   * If this conversation has a pending tool confirmation and the user replied
-   * with a short approve/deny phrase, return a decision to resolve it.
-   * Returns null for anything ambiguous so normal conversation proceeds.
-   */
-  private resolvePendingConfirmationIntent(
-    conversationId: string,
-    input: string,
-  ): ConfirmationDecision | null {
-    if (this.pendingConfirmation.size === 0) return null;
-
-    let matchingToolId: string | null = null;
-    for (const [toolId, meta] of this.pendingMeta.entries()) {
-      if (meta.conversationId === conversationId) {
-        matchingToolId = toolId;
-      }
-    }
-    if (!matchingToolId) return null;
-
-    const intent = classifyConfirmationIntent(input);
-    if (intent === "approve") {
-      return { toolId: matchingToolId, approved: true };
-    }
-    if (intent === "deny") {
-      return { toolId: matchingToolId, approved: false, reason: `User said: ${input.trim()}` };
-    }
-    return null;
-  }
-
-  /**
    * Generate a natural final response from tool results via one extra AI turn.
    * The tool results are already stored in conversation history as tool
    * messages, so the provider renders the full tool-call chain. On any failure
@@ -921,40 +751,12 @@ export class JarvisPipeline {
   }
 
   /**
-   * Request confirmation for a tool (used directly without a pending AI flow)
-   */
-  async requestToolConfirmation(toolName: string): Promise<PendingToolCall | null> {
-    const tool = this.getRegistry().getTool(toolName);
-    if (!tool) {
-      return null;
-    }
-
-    const pending: PendingToolCall = {
-      id: `tool-${Date.now()}`,
-      name: toolName,
-      description: tool.description,
-      humanReadableAction: describeToolAction(toolName, tool.description, {}),
-      arguments: {},
-      riskLevel: tool.riskLevel,
-      requiresUserConfirmation: tool.requiresUserConfirmation || false,
-    };
-
-    this.pendingConfirmation.set(pending.id, pending);
-    this.pendingMeta.set(pending.id, { conversationId: `jarvis-${Date.now()}`, userInput: toolName });
-    this.setState(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-    return pending;
-  }
-
-  /**
    * Execute an automation's action through the standard execution path.
    *
    * This is the ONLY entry point the scheduler uses (wired via
    * lib/automation/wiring.ts), so scheduled/conditional execution shares the
-   * same ToolRegistry validation, PermissionManager, and confirmation gating
-   * as normal conversation. There is deliberately no scheduler bypass:
-   *  - safe tools run immediately;
-   *  - confirmation-gated tools pause into WAITING_FOR_CONFIRMATION and only
-   *    execute after the user approves the exact pending request.
+   * same ToolRegistry validation, PermissionManager, and safety checks
+   * as normal conversation. There is deliberately no scheduler bypass.
    */
   async executeAutomationTool(
     action: AutomationAction,
@@ -968,43 +770,23 @@ export class JarvisPipeline {
       return { status: "failed", message: `Tool ${toolId} is not registered` };
     }
 
-    const gated = tool.requiresUserConfirmation || tool.riskLevel !== "safe";
-    if (this.enableConfirmation && gated) {
-      // Pause into the standard confirmation flow.
-      const safeArgs = sanitizeArguments(args);
-      const pending: PendingToolCall = {
-        id: `auto-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        name: toolId,
-        description: tool.description,
-        humanReadableAction: describeToolAction(toolId, tool.description, safeArgs),
-        arguments: safeArgs,
-        riskLevel: tool.riskLevel,
-        requiresUserConfirmation: true,
-      };
-      this.pendingConfirmation.set(pending.id, pending);
-      this.pendingMeta.set(pending.id, {
-        conversationId: `auto-${meta.automationId}`,
-        userInput: `Automation: ${meta.name}`,
-        automationId: meta.automationId,
-      });
-      this.setState(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-      return {
-        status: "waiting_for_confirmation",
-        pendingConfirmationId: pending.id,
-        message: `${pending.humanReadableAction} (scheduled automation "${meta.name}")`,
-      };
-    }
-
-    // Safe tool: execute immediately through the same validated path.
+    // Execute immediately through the same validated path.
     this.setState(JarvisRuntimeState.EXECUTING);
-    const result = await this.executeTool(toolId, args, Date.now(), false);
+    const result = await this.executeTool(toolId, args, Date.now(), true);
     this.setState(JarvisRuntimeState.RESPONDING);
     this.setState(JarvisRuntimeState.IDLE);
 
     if (result.success) {
       const message = this.automationResultMessage(result.result) ?? `Automation "${meta.name}" executed successfully`;
+      getAutomationManager().recordRun(meta.automationId, "success");
+      getNotificationBus().push({
+        title: `Automation: ${toolId}`,
+        body: message,
+        automationId: meta.automationId,
+      });
       return { status: "executed", message, result: result.result };
     }
+    getAutomationManager().recordRun(meta.automationId, "failed");
     return {
       status: "failed",
       message: `Automation "${meta.name}" failed: ${result.error ?? "unknown error"}`,
@@ -1092,7 +874,9 @@ export class JarvisPipeline {
       return (service as unknown as AssistantLike) ?? null;
     }
 
-    console.warn("[AI] assistant unavailable: ensureAIReady failed");
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[AI] assistant unavailable: ensureAIReady failed");
+    }
     return null;
   }
 
@@ -1142,31 +926,9 @@ export class JarvisPipeline {
   }
 
   /**
-   * Get pending confirmations
-   */
-  getPendingConfirmations(): PendingToolCall[] {
-    return Array.from(this.pendingConfirmation.values());
-  }
-
-  /**
-   * Most recently registered pending confirmation, if any. Nested gated waits
-   * (scheduled automations triggered by a safe tool) register a pending here
-   * during a step's execution; finalize surfaces it to the caller.
-   */
-  private latestPendingConfirmation(): PendingToolCall | null {
-    let latest: PendingToolCall | null = null;
-    for (const pending of this.pendingConfirmation.values()) {
-      latest = pending;
-    }
-    return latest;
-  }
-
-  /**
-   * Clear pending confirmations and any paused action chains
+   * Clear any paused action chains
    */
   clearPendingConfirmations(): void {
-    this.pendingConfirmation.clear();
-    this.pendingMeta.clear();
     this.activeChains.clear();
   }
 }

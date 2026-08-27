@@ -1,8 +1,8 @@
 /**
  * Tests for JARVIS Pipeline Flow (with injected fakes)
- * Validates tool success/failure, confirmation required/approved/denied,
- * offline mode, and AI failure degradation — without touching real
- * macOS tools, the microphone, or any live AI provider.
+ * Validates tool success/failure (including immediate execution of
+ * confirmation-gated tools), offline mode, and AI failure degradation —
+ * without touching real macOS tools, the microphone, or any live AI provider.
  */
 
 import { JarvisPipeline } from "@/lib/runtime/pipeline";
@@ -139,8 +139,8 @@ describe("JARVIS Pipeline Flow", () => {
     });
   });
 
-  describe("Confirmation Flow", () => {
-    test("should require confirmation for a gated tool", async () => {
+  describe("Gated Tool Execution", () => {
+    test("should execute a confirmation-gated tool immediately", async () => {
       const registry = createRegistry();
       const assistant = createFakeAssistant({
         response: "Launching.",
@@ -151,62 +151,13 @@ describe("JARVIS Pipeline Flow", () => {
 
       const result = await pipeline.processUserInput("launch Safari");
 
-      expect(result.state).toBe(JarvisRuntimeState.WAITING_FOR_CONFIRMATION);
-      expect(result.pendingConfirmation).toBeDefined();
-      expect(result.pendingConfirmation?.name).toBe("launch_application");
-      expect(result.pendingConfirmation?.humanReadableAction).toContain("Safari");
-      expect(result.toolsExecuted).toBeUndefined();
-    });
-
-    test("should execute the tool after approval", async () => {
-      const registry = createRegistry();
-      const assistant = createFakeAssistant({
-        response: "Launching.",
-        toolsUsed: ["launch_application"],
-        toolCalls: [{ id: "c1", name: "launch_application", arguments: { application: "Safari" } }],
-      });
-      const pipeline = new JarvisPipeline({ assistant, registry });
-
-      const pending = await pipeline.processUserInput("launch Safari");
-      const toolId = pending.pendingConfirmation!.id;
-
-      const result = await pipeline.handleConfirmation({ toolId, approved: true });
-
       expect(result.state).toBe(JarvisRuntimeState.IDLE);
+      expect(result.pendingConfirmation).toBeUndefined();
       expect(result.toolsExecuted?.[0]).toMatchObject({
         toolName: "launch_application",
         success: true,
       });
       expect(result.toolsExecuted?.[0].result).toEqual({ launched: "Safari" });
-    });
-
-    test("should cancel the tool after denial without executing", async () => {
-      const registry = createRegistry();
-      const assistant = createFakeAssistant({
-        response: "Launching.",
-        toolsUsed: ["launch_application"],
-        toolCalls: [{ id: "c1", name: "launch_application", arguments: { application: "Safari" } }],
-      });
-      const pipeline = new JarvisPipeline({ assistant, registry });
-
-      const pending = await pipeline.processUserInput("launch Safari");
-      const toolId = pending.pendingConfirmation!.id;
-
-      const result = await pipeline.handleConfirmation({ toolId, approved: false, reason: "Not now" });
-
-      expect(result.state).toBe(JarvisRuntimeState.IDLE);
-      expect(result.toolsExecuted).toBeUndefined();
-      expect(result.message).toContain("Cancelled");
-      expect(pipeline.getPendingConfirmations()).toHaveLength(0);
-    });
-
-    test("should reject an unknown confirmation decision", async () => {
-      const registry = createRegistry();
-      const pipeline = new JarvisPipeline({ assistant: null, registry });
-
-      const result = await pipeline.handleConfirmation({ toolId: "missing", approved: true });
-
-      expect(result.error).toBeDefined();
     });
   });
 

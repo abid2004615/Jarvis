@@ -10,6 +10,8 @@ export interface VoiceSettings {
   followUpWindow: number;
   voiceResponseEnabled: boolean;
   pushToTalkEnabled: boolean;
+  globalWakeEnabled: boolean;
+  globalWakePhrase: string;
 }
 
 const STORAGE_KEY = "jarvis-voice-settings";
@@ -19,6 +21,8 @@ const DEFAULTS: VoiceSettings = {
   followUpWindow: 15,
   voiceResponseEnabled: true,
   pushToTalkEnabled: true,
+  globalWakeEnabled: false,
+  globalWakePhrase: "hey jarvis",
 };
 
 function isBrowser(): boolean {
