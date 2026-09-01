@@ -33,3 +33,9 @@ yarn-error.log*
 next-env.d.ts
 __pycache__/
 *.pyc
+
+# vosk speech model (~68MB) — fetch with `npm run setup`
+/companion/vosk-model-*/
+
+# python virtualenv for the wake companion
+/companion/.venv/

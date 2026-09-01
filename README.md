@@ -14,10 +14,16 @@ A personal AI assistant for macOS with voice, vision, computer use, goal workflo
 
 ```bash
 npm install
+npm run setup          # download the offline Vosk speech model (~40MB)
 cp .env.example .env.local
 # Edit .env.local and add your Groq API key
 npm run dev
 ```
+
+`npm run setup` fetches the Vosk model into `companion/`. The model is not
+stored in git, so this step is required before using voice features or
+packaging the app. It is idempotent — re-running it verifies the existing
+model and exits. Use `npm run setup -- --force` to re-download.
 
 Open http://localhost:3000.
 
@@ -64,6 +70,7 @@ npm run dev             # Terminal 2: wake companion (optional)
 ### Global Wake Companion
 
 ```bash
+npm run setup          # if you have not already fetched the model
 cd companion
 pip install -r requirements.txt
 python jarvis-wake.py --port 3000
@@ -71,14 +78,23 @@ python jarvis-wake.py --port 3000
 
 Offline wake word detection using Vosk. Signals the server when "Hey JARVIS" is heard.
 
+The model lives in `companion/vosk-model-small-en-us-0.15/` and is gitignored.
+`npm run setup` is the supported way to obtain it; the companions can also
+self-download on first run, but that path does not work inside a packaged app
+bundle, which is read-only.
+
 ### Packaging
 
 ```bash
+npm run setup           # Fetch the Vosk model (required before packaging)
 npm run build           # Production Next.js build
 npm run electron:compile # Compile Electron TypeScript
 npm run electron:dev    # Run Electron in development mode
 npm run package         # Build and package JARVIS.app
 ```
+
+`npm run package` runs `npm run setup` first, so the packaged app always ships
+with the speech model bundled.
 
 ## Environment Variables
 

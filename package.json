@@ -10,14 +10,15 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
+    "setup": "node scripts/setup-vosk-model.mjs",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "electron:compile": "tsc -p electron/tsconfig.json",
     "electron:dev": "npm run electron:compile && electron .",
     "electron:build": "npm run build && npm run electron:compile",
-    "package": "npm run electron:build && electron-builder --mac",
-    "package:dir": "npm run electron:build && electron-builder --mac --dir"
+    "package": "npm run setup && npm run electron:build && electron-builder --mac",
+    "package:dir": "npm run setup && npm run electron:build && electron-builder --mac --dir"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.35",
