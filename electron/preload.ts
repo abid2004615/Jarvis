@@ -25,4 +25,28 @@ contextBridge.exposeInMainWorld("jarvis", {
       ipcRenderer.removeListener("jarvis:voice-event", handler);
     };
   },
+
+  // Floating quick-command HUD
+  hudHide: () => ipcRenderer.invoke("jarvis:hud-hide"),
+  hudResize: (height: number) => ipcRenderer.invoke("jarvis:hud-resize", height),
+  hudOpenMain: () => ipcRenderer.invoke("jarvis:hud-open-main"),
+  hudInfo: () => ipcRenderer.invoke("jarvis:hud-info"),
+
+  /** Fires each time the overlay is revealed, so it can reset and refocus. */
+  onHudShown: (callback: () => void) => {
+    const handler = () => callback();
+    ipcRenderer.on("jarvis:hud-shown", handler);
+    return () => {
+      ipcRenderer.removeListener("jarvis:hud-shown", handler);
+    };
+  },
+
+  /** Fires when the overlay is dismissed, so it can clear transient state. */
+  onHudHidden: (callback: () => void) => {
+    const handler = () => callback();
+    ipcRenderer.on("jarvis:hud-hidden", handler);
+    return () => {
+      ipcRenderer.removeListener("jarvis:hud-hidden", handler);
+    };
+  },
 });

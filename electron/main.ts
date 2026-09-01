@@ -7,7 +7,17 @@
  * Zero changes to the existing JARVIS architecture.
  */
 
-import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, dialog } from "electron";
+import {
+  app,
+  BrowserWindow,
+  Menu,
+  Tray,
+  nativeImage,
+  ipcMain,
+  dialog,
+  globalShortcut,
+  screen,
+} from "electron";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -22,6 +32,17 @@ const HEALTH_CHECK_TIMEOUT_MS = 5000;
 const MAX_RESTART_ATTEMPTS = 3;
 const RESTART_COOLDOWN_MS = 10000;
 const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10000;
+
+// ─── Floating HUD ─────────────────────────────────────────────
+
+/** Spotlight-style quick command overlay. */
+const HUD_SHORTCUT = "CommandOrControl+Shift+Space";
+const HUD_WIDTH = 680;
+/** Collapsed height: just the input row. The renderer grows it for answers. */
+const HUD_MIN_HEIGHT = 88;
+const HUD_MAX_HEIGHT = 460;
+/** Fraction of the screen height the overlay sits at, matching Spotlight. */
+const HUD_TOP_RATIO = 0.22;
 
 // ─── Runtime Configuration ────────────────────────────────────
 
@@ -120,6 +141,8 @@ function migrateDevConfig(projectRoot: string): void {
 // ─── State ────────────────────────────────────────────────────
 
 let mainWindow: BrowserWindow | null = null;
+let hudWindow: BrowserWindow | null = null;
+let hudShortcutRegistered = false;
 let tray: Tray | null = null;
 let backendProcess: ChildProcess | null = null;
 let companionProcess: ChildProcess | null = null;
@@ -703,6 +726,120 @@ function loadUI(): void {
   mainWindow.loadURL(url);
 }
 
+// ─── Floating HUD Window ───────────────────────────────────────
+
+/**
+ * Position the overlay horizontally centred and near the top of whichever
+ * display currently holds the pointer, so it opens where the user is looking.
+ */
+function positionHud(win: BrowserWindow): void {
+  const cursor = screen.getCursorScreenPoint();
+  const { workArea } = screen.getDisplayNearestPoint(cursor);
+  const [width, height] = win.getSize();
+
+  win.setPosition(
+    Math.round(workArea.x + (workArea.width - width) / 2),
+    Math.round(workArea.y + workArea.height * HUD_TOP_RATIO),
+    false,
+  );
+  void height;
+}
+
+/**
+ * Create the frameless quick-command overlay. It is built once at startup and
+ * then shown/hidden, so invoking the shortcut feels instant instead of paying
+ * page load on every keypress.
+ */
+function createHudWindow(): void {
+  hudWindow = new BrowserWindow({
+    width: HUD_WIDTH,
+    height: HUD_MIN_HEIGHT,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    // "panel" lets the overlay float above other apps, including fullscreen ones.
+    type: "panel",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+    },
+  });
+
+  hudWindow.setAlwaysOnTop(true, "screen-saver");
+  hudWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+
+  // Dismiss on focus loss, the same way Spotlight behaves. Skipped while
+  // devtools are attached, otherwise the overlay closes as you inspect it.
+  hudWindow.on("blur", () => {
+    if (hudWindow?.webContents.isDevToolsOpened()) return;
+    hideHud();
+  });
+
+  hudWindow.on("closed", () => {
+    hudWindow = null;
+  });
+
+  const url = `http://localhost:${serverPort}/hud`;
+  log("info", `Loading HUD from ${url}`);
+  hudWindow.loadURL(url);
+}
+
+function showHud(): void {
+  if (!hudWindow || hudWindow.isDestroyed()) return;
+
+  // Collapse to the input-only height so each invocation starts clean.
+  hudWindow.setBounds({ height: HUD_MIN_HEIGHT }, false);
+  positionHud(hudWindow);
+  hudWindow.show();
+  hudWindow.focus();
+  hudWindow.webContents.send("jarvis:hud-shown");
+}
+
+function hideHud(): void {
+  if (!hudWindow || hudWindow.isDestroyed()) return;
+  if (!hudWindow.isVisible()) return;
+  hudWindow.hide();
+  hudWindow.webContents.send("jarvis:hud-hidden");
+}
+
+function toggleHud(): void {
+  if (!hudWindow || hudWindow.isDestroyed()) return;
+  if (hudWindow.isVisible()) {
+    hideHud();
+  } else {
+    showHud();
+  }
+}
+
+/**
+ * Bind the global shortcut. Registration fails when another app already owns
+ * the combination; that is reported but never fatal, since the tray and main
+ * window still provide access.
+ */
+function registerGlobalShortcuts(): void {
+  try {
+    hudShortcutRegistered = globalShortcut.register(HUD_SHORTCUT, toggleHud);
+  } catch (err) {
+    hudShortcutRegistered = false;
+    log("warn", `Failed to register ${HUD_SHORTCUT}: ${err}`);
+    return;
+  }
+
+  if (hudShortcutRegistered) {
+    log("info", `Quick command shortcut registered: ${HUD_SHORTCUT}`);
+  } else {
+    log("warn", `${HUD_SHORTCUT} is already taken by another app — quick command unavailable`);
+  }
+}
+
 // ─── System Tray ───────────────────────────────────────────────
 
 function createTray(): void {
@@ -755,6 +892,11 @@ function updateTrayMenu(): void {
           mainWindow.focus();
         }
       },
+    },
+    {
+      label: "Quick Command",
+      accelerator: hudShortcutRegistered ? HUD_SHORTCUT : undefined,
+      click: () => showHud(),
     },
     {
       label: "Restart JARVIS",
@@ -813,6 +955,44 @@ function registerIPC(): void {
   ipcMain.handle("jarvis:voice-available", () => {
     return { available: voiceProcess !== null };
   });
+
+  // Floating HUD IPC
+  ipcMain.handle("jarvis:hud-hide", () => {
+    hideHud();
+    return { ok: true };
+  });
+
+  /**
+   * The renderer knows how tall its content is; the window has to be resized
+   * from the main process. Clamped so a renderer bug cannot grow the overlay
+   * to cover the screen.
+   */
+  ipcMain.handle("jarvis:hud-resize", (_event, rawHeight: unknown) => {
+    if (!hudWindow || hudWindow.isDestroyed()) return { ok: false };
+
+    const requested = typeof rawHeight === "number" && Number.isFinite(rawHeight) ? rawHeight : HUD_MIN_HEIGHT;
+    const height = Math.round(Math.min(HUD_MAX_HEIGHT, Math.max(HUD_MIN_HEIGHT, requested)));
+
+    const [, current] = hudWindow.getSize();
+    if (current !== height) {
+      hudWindow.setBounds({ height }, false);
+    }
+    return { ok: true, height };
+  });
+
+  /** Hand off from the overlay to the full window. */
+  ipcMain.handle("jarvis:hud-open-main", () => {
+    hideHud();
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+    return { ok: true };
+  });
+
+  ipcMain.handle("jarvis:hud-info", () => {
+    return { shortcut: HUD_SHORTCUT, shortcutRegistered: hudShortcutRegistered };
+  });
 }
 
 // ─── Restart ───────────────────────────────────────────────────
@@ -827,6 +1007,9 @@ async function restartJARVIS(): Promise<void> {
   await startVoice(serverPort);
   if (mainWindow) {
     loadUI();
+  }
+  if (hudWindow && !hudWindow.isDestroyed()) {
+    hudWindow.reload();
   }
   updateTrayMenu();
 }
@@ -874,6 +1057,10 @@ async function initializeJARVIS(): Promise<void> {
     // Create window and load UI
     createWindow();
     loadUI();
+
+    // Create the quick command overlay and bind its global shortcut
+    createHudWindow();
+    registerGlobalShortcuts();
 
     // Create tray
     createTray();
@@ -934,6 +1121,7 @@ if (!gotTheLock) {
     isQuitting = true;
 
     log("info", "JARVIS shutting down...");
+    globalShortcut.unregisterAll();
     stopHealthCheck();
     await stopVoice();
     await stopCompanion();
