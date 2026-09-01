@@ -15,6 +15,7 @@ import { detectWakeWord, stripWakeWord } from "./wake-word";
 import { createTTSManager, type TTSManager } from "./tts";
 import { loadVoiceSettings, saveVoiceSettings, type VoiceSettings } from "./settings";
 import { isNativeVoiceAvailable, createNativeVoiceAdapter, type NativeVoiceAdapter } from "./native";
+import { createBargeInDetector } from "./barge-in";
 
 export type VoiceSessionState =
   | "idle"
@@ -112,6 +113,9 @@ export function createVoiceSession(
   const mic = createMicrophoneManager();
   const vad = createVoiceActivityDetector({ speechThreshold: 0.12, silenceTimeout: 1500 });
   const tts = createTTSManager();
+  // Native path has no MediaStream for the VAD, so barge-in is derived from
+  // the companion's reported audio level instead.
+  const bargeIn = createBargeInDetector();
   let settings = loadVoiceSettings();
   let state: VoiceSessionState = "idle";
   let permissionState: MicPermissionState = "unknown";
@@ -299,6 +303,17 @@ export function createVoiceSession(
         },
         onAudioLevel: (level: number) => {
           sessionCallbacks.onAudioLevel?.(level);
+
+          // Barge-in: the browser path gets this from the VAD's onSpeechStart,
+          // but the native path only has this level stream to work with.
+          if (state === "speaking" && bargeIn.feed(level)) {
+            tts.interrupt();
+            bargeIn.reset();
+            sessionCallbacks.onSpeakingEnd?.();
+            // The companion listens continuously, so unlike the browser path
+            // there is no recognition to restart here.
+            setState("listening");
+          }
         },
         onError: (error: string) => {
           if (destroyed) return;
@@ -373,6 +388,7 @@ export function createVoiceSession(
       if (destroyed) return;
       cleanupTimers();
       tts.cancel();
+      bargeIn.reset();
       if (useNativeVoice) {
         nativeVoice?.stop();
       } else {
@@ -387,6 +403,7 @@ export function createVoiceSession(
 
       if (state === "speaking") {
         tts.interrupt();
+        bargeIn.reset();
         sessionCallbacks.onSpeakingEnd?.();
       }
 
@@ -463,8 +480,11 @@ export function createVoiceSession(
       tts.speak(response.message, {
         onStart: () => {
           setState("speaking");
+          // Arms native barge-in and starts its echo grace period.
+          bargeIn.playbackStarted();
         },
         onEnd: () => {
+          bargeIn.reset();
           sessionCallbacks.onSpeakingEnd?.();
           setState("listening");
           startFollowUpWindow();
@@ -473,6 +493,7 @@ export function createVoiceSession(
           }
         },
         onError: () => {
+          bargeIn.reset();
           sessionCallbacks.onSpeakingEnd?.();
           setState("listening");
           startFollowUpWindow();

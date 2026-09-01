@@ -11,6 +11,7 @@
     "start": "next start",
     "lint": "eslint .",
     "setup": "node scripts/setup-vosk-model.mjs",
+    "icons": "node scripts/generate-icons.mjs",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
@@ -50,7 +51,8 @@
       "output": "release"
     },
     "files": [
-      "electron/dist/**/*"
+      "electron/dist/**/*",
+      "assets/**/*"
     ],
     "extraResources": [
       {
@@ -72,7 +74,7 @@
         "zip"
       ],
       "category": "public.app-category.productivity",
-      "icon": null,
+      "icon": "assets/icon.icns",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "electron/entitlements.mac.plist",

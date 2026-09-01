@@ -10,6 +10,9 @@
 
 # electron
 /electron/dist/
+# stray compiled output if tsconfig outDir is ever changed back
+/electron/*.js
+/electron/*.js.map
 /release/
 
 # misc

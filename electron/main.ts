@@ -842,10 +842,28 @@ function registerGlobalShortcuts(): void {
 
 // ─── System Tray ───────────────────────────────────────────────
 
+/**
+ * Load the menu bar icon. Marked as a macOS template image so the system
+ * tints it for light, dark, and highlighted menu bars instead of us guessing.
+ * Falls back to an empty image so a missing asset never blocks startup.
+ */
+function loadTrayIcon(): Electron.NativeImage {
+  // getAppPath() resolves to the project root in dev and the app bundle when
+  // packaged, so the same path works in both.
+  const iconPath = path.join(app.getAppPath(), "assets", "trayTemplate.png");
+  const icon = nativeImage.createFromPath(iconPath);
+
+  if (icon.isEmpty()) {
+    log("warn", `Tray icon missing or unreadable at ${iconPath}`);
+    return icon;
+  }
+
+  icon.setTemplateImage(true);
+  return icon;
+}
+
 function createTray(): void {
-  // Create a simple tray icon (16x16 black circle)
-  const icon = nativeImage.createEmpty();
-  tray = new Tray(icon);
+  tray = new Tray(loadTrayIcon());
 
   tray.setToolTip("JARVIS");
   tray.on("click", () => {
