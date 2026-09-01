@@ -14,6 +14,9 @@ const customJestConfig = {
   // separate `--runInBand` invocation.
   maxWorkers: 1,
   testMatch: ['**/__tests__/**/*.test.ts', '**/__tests__/**/*.test.tsx'],
+  // Ignore build/package output so Jest's haste map doesn't collide on the
+  // duplicate package.json copied into .next/standalone and the packaged app.
+  modulePathIgnorePatterns: ['<rootDir>/.next/', '<rootDir>/release/'],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/$1',
   },

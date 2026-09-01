@@ -209,11 +209,18 @@ describe("P17 — Graceful Shutdown", () => {
       if (stopped) return;
       stopped = true;
 
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<void>((resolve) => {
-        setTimeout(() => resolve(), timeoutMs);
+        timeoutId = setTimeout(() => resolve(), timeoutMs);
       });
 
-      await Promise.race([stopFn(), timeout]);
+      try {
+        await Promise.race([stopFn(), timeout]);
+      } finally {
+        // Losing the race must not leave a pending timer behind, otherwise it
+        // keeps the Node event loop alive after the test finishes.
+        if (timeoutId) clearTimeout(timeoutId);
+      }
     };
   }
 
@@ -227,13 +234,19 @@ describe("P17 — Graceful Shutdown", () => {
   });
 
   it("does not hang after timeout", async () => {
-    const stopFn = async () => {
-      await new Promise((r) => setTimeout(r, 10000));
-    };
+    // The shutdown race is won by its own 50ms timeout, so this deliberately
+    // slow timer is still pending when the assertion runs. Track it and clear
+    // it so it never outlives the test and blocks Jest from exiting.
+    let slowTimer: ReturnType<typeof setTimeout> | undefined;
+    const stopFn = () =>
+      new Promise<void>((resolve) => {
+        slowTimer = setTimeout(resolve, 10000);
+      });
     const shutdown = createGracefulShutdown(stopFn, 50);
     const start = Date.now();
     await shutdown();
     const elapsed = Date.now() - start;
+    if (slowTimer) clearTimeout(slowTimer);
     expect(elapsed).toBeLessThan(1000);
   });
 
